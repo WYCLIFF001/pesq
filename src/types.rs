@@ -40,9 +40,6 @@ pub enum PesqError {
     SignalTooShort { samples: usize },
     /// No utterance qualified for scoring (spec 01, 1.11 step 5).
     NoUtterancesFound,
-    /// The processing stage is not implemented yet; this Round 2 scaffold
-    /// stubs the algorithm and returns this error from [`crate::pesq`].
-    NotImplemented,
 }
 
 impl fmt::Display for PesqError {
@@ -55,10 +52,6 @@ impl fmt::Display for PesqError {
             Self::NoUtterancesFound => {
                 write!(f, "no utterance found in the input signals")
             }
-            Self::NotImplemented => write!(
-                f,
-                "pesq is not implemented yet: this Round 2 scaffold stubs the processing stages"
-            ),
         }
     }
 }
@@ -209,6 +202,5 @@ mod tests {
         let err = PesqError::SignalTooShort { samples: 100 };
         assert!(err.to_string().contains("100"));
         assert!(!PesqError::NoUtterancesFound.to_string().is_empty());
-        assert!(!PesqError::NotImplemented.to_string().is_empty());
     }
 }
