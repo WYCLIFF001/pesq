@@ -225,7 +225,7 @@ pub(crate) fn best_split(
 /// breakpoints; recording a candidate reads the histogram accumulated
 /// so far, so values recorded at different breakpoints of one pass can
 /// differ. One pass serves every candidate that shares its seed.
-
+///
 /// The running state of one accumulation: the two cursors, the raw
 /// histogram and its running sum, and the per-frame scratch buffers.
 struct SplitAccumulator<'a> {
@@ -328,7 +328,10 @@ impl SplitAccumulator<'_> {
             // spread covers every lag whose absolute value exceeds v.
             // The Hsum increment applies once per exceeding lag, so the
             // recorded confidence peak/Hsum stays at most 1.
-            let peak = spectrum.iter().map(|value| value.abs()).fold(0.0f32, f32::max);
+            let peak = spectrum
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0f32, f32::max);
             let v = 0.99 * peak;
             let unit = v.powf(0.125) / 8.0;
             for (lag, &value) in spectrum.iter().enumerate() {

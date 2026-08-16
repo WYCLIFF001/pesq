@@ -100,7 +100,10 @@ pub fn pesq_8k(ref_wav: &[i16], deg_wav: &[i16]) -> Result<f32, PesqError> {
 /// saved model copies equalized to Nmax + P samples per 1.7), then the
 /// perceptual model of spec 03, the disturbance computation of spec 04,
 /// and the scoring of spec 05.
-fn score_pair(reference: types::SignalBuffer, degraded: types::SignalBuffer) -> Result<f32, PesqError> {
+fn score_pair(
+    reference: types::SignalBuffer,
+    degraded: types::SignalBuffer,
+) -> Result<f32, PesqError> {
     let pair = input::process_pair(reference, degraded)?;
 
     // spec 03: perceptual model over the saved copies with the

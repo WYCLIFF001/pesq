@@ -237,8 +237,7 @@ pub fn negative_delay_skip_flags(utterances: &[Utterance], frame_stop: usize) ->
         let j0 = i64::from(pair[0].fine_delay);
         let j1 = i64::from(pair[1].fine_delay);
         if j1 - j0 < -128 {
-            let mut f1 =
-                ((pair[1].start_window as i64 - 75) * WINDOW_SAMPLES as i64 + j1) / 128;
+            let mut f1 = ((pair[1].start_window as i64 - 75) * WINDOW_SAMPLES as i64 + j1) / 128;
             let j = ((pair[0].end_window as i64 - 75) * WINDOW_SAMPLES as i64 + j0) / 128;
             if f1 > j {
                 f1 = j;

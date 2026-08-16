@@ -89,7 +89,10 @@ pub fn fine_delay(
             frame_deg[i] = window[i] * degraded[deg_start + i];
         }
         let spectrum = spectral_cross_correlate(&frame_ref, &frame_deg);
-        let peak = spectrum.iter().map(|value| value.abs()).fold(0.0f32, f32::max);
+        let peak = spectrum
+            .iter()
+            .map(|value| value.abs())
+            .fold(0.0f32, f32::max);
         let threshold = 0.99 * peak;
         let weight = threshold.powf(0.125);
         for (lag, &value) in spectrum.iter().enumerate() {
@@ -216,6 +219,55 @@ pub fn qualifying_runs(
         }
     }
     runs
+}
+
+/// Per-utterance coarse correlation of spec 01 section 1.9 step 7,
+/// returning the raw correlation output alongside the estimate.
+///
+/// The clamps of step 7 apply as in [`coarse_delay_search`]: the
+/// degraded start sd = s0 + seed/W, with s0 moved right when sd would
+/// be negative, and nd = nr shortened to the degraded window count.
+/// Returns `None` when the correlation does not run (either clamped
+/// length at most 1, or the clamp moved s0 past s1), in which case the
+/// estimate is the seed.
+///
+/// The split passes of spec 01 section 1.13 step 4 need the raw output
+/// values: each correlation writes nr + nd - 1 values at scratch
+/// offsets 0..nr + nd - 2 and thereby corrupts the split-pass window
+/// that shares the scratch (spec 01, section 1.13.1).
+pub(crate) fn coarse_correlation(
+    reference: &VadData,
+    degraded: &VadData,
+    s0: usize,
+    s1: usize,
+    seed: i32,
+) -> Option<(i32, Vec<f32>)> {
+    let window_divisor = WINDOW_SAMPLES as i32;
+    let mut s0 = s0;
+    let mut sd = s0 as i32 + seed / window_divisor;
+    if sd < 0 {
+        s0 = ((-seed) / window_divisor) as usize;
+        sd = 0;
+    }
+    if s0 >= s1 {
+        return None;
+    }
+    let nr = s1 - s0;
+    let mut nd = nr;
+    if sd as usize + nd > degraded.window_count {
+        nd = degraded.window_count - sd as usize;
+    }
+    if nr <= 1 || nd <= 1 {
+        return None;
+    }
+    let x = &reference.log_vad[s0..s0 + nr];
+    let y = &degraded.log_vad[sd as usize..sd as usize + nd];
+    let correlation = correlate(x, y);
+    let (best_index, _) = maximizer(&correlation, nr - 1);
+    Some((
+        (best_index as i32 - nr as i32 + 1) * window_divisor + seed,
+        correlation,
+    ))
 }
 
 #[cfg(test)]
@@ -373,53 +425,4 @@ mod tests {
         let zeros = [0.0f32; 9];
         assert_eq!(lag_from_correlation(&zeros, 4), 0);
     }
-}
-
-/// Per-utterance coarse correlation of spec 01 section 1.9 step 7,
-/// returning the raw correlation output alongside the estimate.
-///
-/// The clamps of step 7 apply as in [`coarse_delay_search`]: the
-/// degraded start sd = s0 + seed/W, with s0 moved right when sd would
-/// be negative, and nd = nr shortened to the degraded window count.
-/// Returns `None` when the correlation does not run (either clamped
-/// length at most 1, or the clamp moved s0 past s1), in which case the
-/// estimate is the seed.
-///
-/// The split passes of spec 01 section 1.13 step 4 need the raw output
-/// values: each correlation writes nr + nd - 1 values at scratch
-/// offsets 0..nr + nd - 2 and thereby corrupts the split-pass window
-/// that shares the scratch (spec 01, section 1.13.1).
-pub(crate) fn coarse_correlation(
-    reference: &VadData,
-    degraded: &VadData,
-    s0: usize,
-    s1: usize,
-    seed: i32,
-) -> Option<(i32, Vec<f32>)> {
-    let window_divisor = WINDOW_SAMPLES as i32;
-    let mut s0 = s0;
-    let mut sd = s0 as i32 + seed / window_divisor;
-    if sd < 0 {
-        s0 = ((-seed) / window_divisor) as usize;
-        sd = 0;
-    }
-    if s0 >= s1 {
-        return None;
-    }
-    let nr = s1 - s0;
-    let mut nd = nr;
-    if sd as usize + nd > degraded.window_count {
-        nd = degraded.window_count - sd as usize;
-    }
-    if nr <= 1 || nd <= 1 {
-        return None;
-    }
-    let x = &reference.log_vad[s0..s0 + nr];
-    let y = &degraded.log_vad[sd as usize..sd as usize + nd];
-    let correlation = correlate(x, y);
-    let (best_index, _) = maximizer(&correlation, nr - 1);
-    Some((
-        (best_index as i32 - nr as i32 + 1) * window_divisor + seed,
-        correlation,
-    ))
 }

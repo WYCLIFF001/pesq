@@ -3,10 +3,20 @@ name = "pesq"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
+authors = ["WYCLIFF <wycliffomondi01@gmail.com>"]
 description = "Pure Rust implementation of ITU-T P.862 PESQ speech quality assessment"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/WYCLIFF001/pesq"
+homepage = "https://github.com/WYCLIFF001/pesq"
+documentation = "https://docs.rs/pesq"
 keywords = ["pesq", "audio", "quality", "mos", "itu-t"]
 categories = ["multimedia::audio"]
+readme = "README.md"
+exclude = [
+    ".github/*",
+    "benches/*",
+    "target/*",
+]
 
 [dependencies]
 rustfft = "6"
@@ -14,3 +24,27 @@ rustfft = "6"
 # Conformance WAV files are not redistributable and are loaded from
 # PESQ_CONFORMANCE_DIR at test time; the test harness has no other
 # dependencies beyond std.
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "pesq_bench"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.bench]
+inherits = "release"
+debug = true
+
+# Configuration for docs.rs
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
