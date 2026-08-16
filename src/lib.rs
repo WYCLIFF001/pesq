@@ -11,7 +11,10 @@
 //! # Public API
 //!
 //! Input: two slices of mono 16-bit linear PCM, one for the reference
-//! signal and one for the degraded signal. [`pesq`] accepts 16 kHz
+//! signal and one for the degraded signal. Scoring several degraded
+//! variants of one utterance is cheaper through [`PesqContext`], which
+//! runs the reference-side preprocessing once and scores each variant
+//! against the prepared state. [`pesq`] accepts 16 kHz
 //! input and decimates to the native 8 kHz model rate (spec 01,
 //! table 1.1); [`pesq_8k`] accepts 8 kHz input directly and is the
 //! entry point for the conformance data of CONFORMANCE.md, which the

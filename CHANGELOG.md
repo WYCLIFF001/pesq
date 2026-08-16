@@ -5,6 +5,67 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-16
+
+Performance update: the same scores, several times faster.
+
+### Changed
+
+- FFT plans are shared process-wide: one lazily initialized planner
+  serves every transform, and rustfft's internal per-size plan cache
+  reuses the same plan across calls instead of rebuilding one per
+  transform (previously the perceptual model also re-planned its
+  256-point FFT for every scored pair).
+- Hann windows are computed once per length and cloned per call.
+- Filter-curve gains (the alignment and IRS receive curves) are
+  interpolated once per (curve, FFT size) pair and cached; previously
+  every filter application re-evaluated the dB curve per bin with f64
+  interpolation and a power function.
+- The fine-alignment smoothing kernel of spec 01 section 1.10 step 5
+  is a process-wide static instead of a per-call allocation and fill.
+
+### Added
+
+- `PesqContext`: prepare a reference once and score any number of
+  degraded variants against it (`PesqContext::new` for 16 kHz PCM,
+  `PesqContext::new_8k` for 8 kHz). Scores are bit-identical to `pesq`
+  and `pesq_8k`; a degraded signal longer than the reference
+  transparently recomputes the reference chain with the larger shared
+  normalization divisor of spec 01 section 1.3 step 3.
+
+### Not changed
+
+- Real-FFT plans: every transform in this crate is real-input and runs
+  through a complex plan. rustfft 6 has no real FFT planner, and every
+  real-FFT algorithm computes different butterfly rounding than the
+  zero-imaginary complex transform; with conformance scores pinned to
+  3 decimals at delta 0.000 and the tightest pair 2e-6 from a rounding
+  boundary, the plans stay complex.
+- No per-utterance parallelism: the second pass of the perceptual
+  model (local gain scaling, spec 03 section 3.7) is sequentially
+  dependent, and the f64 band sums of the first pass accumulate in
+  frame order, so parallel accumulation would change rounding and risk
+  the 3-decimal conformance. No cargo feature was added.
+
+### Measured
+
+- One 10 s pair (16 kHz, criterion bench, this machine): about 580 ms
+  before the update, about 180 to 270 ms after across runs, roughly
+  2.5x to 3x faster (the machine ran a heavy background load during
+  the measurements, so these are approximate).
+- Four degraded variants of one 10 s reference: about 847 ms as four
+  `pesq` calls, about 655 ms through `PesqContext`, the reference
+  preprocessing paid once instead of four times.
+
+### Conformance
+
+Annex A test 2(b) re-run after every optimization step: 40/40 pairs
+at 3-decimal delta 0.000, unchanged. The new context test additionally
+asserts the preprocessed-reference scores are bit-identical to
+`pesq_8k` across all 40 pairs.
+
+[0.1.1]: https://github.com/WYCLIFF001/pesq/releases/tag/v0.1.1
+
 ## [0.1.0] - 2026-08-16
 
 First release: a pure Rust port of the ITU-T P.862 (PESQ) narrowband
