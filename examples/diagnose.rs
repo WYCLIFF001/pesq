@@ -29,9 +29,11 @@ fn main() {
     let markdown =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/spec/CONFORMANCE.md"))
             .expect("spec/CONFORMANCE.md must be present");
+    // Optional first argument: only diagnose the pair with this index.
+    let only: Option<usize> = std::env::args().nth(1).and_then(|arg| arg.parse().ok());
     println!(
         "pair  Nmax    coarse  utt  fine delays (confidence)  skip  frames[start..=stop]  \
-         silent  pitch ref/deg (dB)  loud ref/deg (dB)"
+         silent  pitch ref/deg (dB)  loud ref/deg (dB)  D        A        raw"
     );
     for line in markdown.lines() {
         let mut cells = line.split('|');
@@ -39,6 +41,9 @@ fn main() {
         let Some(index) = cells.next().and_then(|c| c.trim().parse::<usize>().ok()) else {
             continue;
         };
+        if only.is_some_and(|want| want != index) {
+            continue;
+        }
         let Some(reference) = cells.next().map(str::trim) else {
             continue;
         };
@@ -119,6 +124,13 @@ fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
     let mean = |sum: f64| sum / counted.max(1) as f64;
     let db = |ratio: f64| 10.0 * ratio.max(1e-30).log10();
 
+    // spec 04, 4.1 to 4.7: per-frame disturbances and skip zeroing.
+    let disturbances =
+        pesq::disturbance::frame_disturbances(&pair.reference, &pair.degraded, &pair.utterances);
+    // spec 04, 4.8 and spec 05, 5.1: the two indicators and the raw score.
+    let indicators = pesq::disturbance::aggregate(&disturbances, range.start);
+    let raw = pesq::score::raw_score(indicators.symmetric, indicators.asymmetric);
+
     let n_max = pair.nominal_max();
     let delays: Vec<String> = pair
         .utterances
@@ -128,7 +140,7 @@ fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
     println!(
         "pair {index:2}: {n_max:6} {coarse:6} {utt:3} [{delays:60}] {skip:4} \
          {start}..={stop:4} of {frames:4} {silent:4} {pitch_ref:7.2}/{pitch_deg:7.2} \
-         {loud_ref:6.2}/{loud_deg:6.2}",
+         {loud_ref:6.2}/{loud_deg:6.2} {sym:7.3} {asym:7.3} {raw:.3}",
         coarse = pair.utterances.first().map_or(0, |u| u.coarse_delay),
         utt = pair.utterances.len(),
         delays = delays.join(" "),
@@ -146,6 +158,8 @@ fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
         pitch_deg = db(mean(pitch_deg)),
         loud_ref = db(mean(loud_ref)),
         loud_deg = db(mean(loud_deg)),
+        sym = indicators.symmetric,
+        asym = indicators.asymmetric,
     );
 }
 
