@@ -37,7 +37,10 @@ pub(crate) fn realign(
     if intervals.is_empty() {
         return;
     }
-    let n_max = reference.nominal_len;
+    // The common nominal length Nmax of spec 01 section 1.7: the T and
+    // T2 buffers of 4.5.2 and 4.5.4 have Nmax + P samples, and the
+    // clamps take Nmax (spec 04, 4.5.2 step 2 and 4.5.4 step 2).
+    let n_max = reference.nominal_len.max(degraded.nominal_len);
     let realigned = first_realigned(degraded, utterances, n_max);
 
     // spec 04, 4.5.3 to 4.5.4 step 2: one delay per interval, then the

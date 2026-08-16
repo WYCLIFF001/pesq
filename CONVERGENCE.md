@@ -1,21 +1,47 @@
-# Round 3 convergence report: Annex A test 2(b)
+# Convergence report: Annex A test 2(b)
 
 Date: 2026-08-16. Data: the Annex A 8 kHz VoIP set (40 pairs) from `PESQ_CONFORMANCE_DIR`.
 Harness: `cargo test --test conformance -- --nocapture`, which feeds the original 8 kHz
 WAV samples to the native 8 kHz entry point and compares raw P.862 scores rounded to
 3 decimals against `spec/CONFORMANCE.md` (spec section 6).
 
+## 0. Round 4 (current): zero residual, proper decimator, CLI
+
+Round 4 resolves the Round 3 open items 1, 2, and 5 below:
+
+1. **Pair 26 residual fixed.** The trace localized the residual to the last 9 processed
+   frames of pair 26, whose degraded spectra were zeroed by a wrong boundary: the
+   degraded frame bound `d0 + F >= Nmax + P` of spec 03 section 3.2 step 4 was checked
+   against the reference signal's own nominal length instead of the common nominal
+   length Nmax of spec 01 section 1.7. With a degraded file longer than the reference
+   (pair 26: 72000 vs 64000 samples), frames near the end were wrongly declared out of
+   bounds and their degraded content dropped, costing 0.0138 of the raw score. The
+   fix threads the common Nmax through the frame layout, the degraded bounds, the
+   compensation divisor (spec 03, 3.5), the bad-interval buffers and clamps (spec 04,
+   4.5), and the long-signal time weights (spec 04, 4.7). Every use of the reference's
+   own nominal length in those stages was a latent form of the same bug. All 40 pairs
+   now score at 3-decimal delta 0.000 against the C reference.
+2. **16 kHz decimation.** The provisional pair averaging is replaced by a short
+   windowed-sinc anti-aliasing decimator: 33 taps, Hamming window, cutoff at 0.45 of
+   the 8 kHz Nyquist frequency (1800 Hz), unit DC gain, stopband below -45 dB. See
+   `spec/CONFORMANCE.md` section 6 item 4 and the crate docs of
+   `input::decimate_16k_to_8k`. The 8 kHz entry point and the conformance path are
+   untouched by this change.
+3. **`pesq-cli` scorer.** `cargo run --bin pesq-cli -- <ref.wav> <deg.wav>` prints the
+   raw P.862 score with 6 decimals; 8 kHz files score natively, 16 kHz files go
+   through the decimating entry point. Documented in the README.
+
 ## 1. Result
 
-CONFORMANCE: PASS.
+CONFORMANCE: PASS, 40 of 40 pairs at 3-decimal delta 0.000 (Round 4).
 
-| Metric | Round 1 (first attempt) | Round 3 |
-|---|---|---|
-| Pairs beyond 0.05 | 29 of 40 | 0 of 40 |
-| Pairs beyond 0.5 | not recorded | 0 of 40 |
-| Mean abs delta | 0.238 | 0.000350 |
-| RMSE | not recorded | 0.002214 |
-| Max abs delta | 1.234 | 0.014 (pair 26) |
+| Metric | Round 1 (first attempt) | Round 3 | Round 4 |
+|---|---|---|---|
+| Pairs beyond 0.05 | 29 of 40 | 0 of 40 | 0 of 40 |
+| Pairs beyond 0.5 | not recorded | 0 of 40 | 0 of 40 |
+| Mean abs delta | 0.238 | 0.000350 | 0.000000 |
+| RMSE | not recorded | 0.002214 | 0.000000 |
+| Max abs delta | 1.234 | 0.014 (pair 26) | 0.000 |
 
 Criteria from `spec/CONFORMANCE.md` section 2: at most 1 of 40 pairs may differ by more
 than 0.05, and no pair may differ by more than 0.5. Both criteria are met with margin:
@@ -32,6 +58,11 @@ than 0.05, and no pair may differ by more than 0.5. Both criteria are met with m
 - Max abs delta: 0.014 on pair 26 (`u_am1s03.wav` / `u_am1s03b1c18.wav`):
   raw score 2.792179, expected 2.806 (delta 0.013821 unrounded).
 - Second largest delta: 0.000498 on pair 33 (`u_am1s01.wav` / `u_am1s01b2c8.wav`).
+
+Round 4, after the pair 26 fix of section 0: pair 26 raw score 2.806101, expected
+2.806 (unrounded delta 0.000101); mean abs delta 0.000000 and max abs delta 0.000 on
+the 3-decimal comparison of the conformance rule. The per-pair table of section 4
+holds with every delta at 0.000.
 
 ## 3. What improved since the first attempt
 
@@ -103,19 +134,13 @@ Scores are raw P.862 scores; deltas are computed on scores rounded to 3 decimals
 
 ## 5. Remaining gaps
 
-The set is conformant, so a further round is optional. Open items, in rough priority:
+Round 4 closed the first three items below. Open items for a later round:
 
-1. Pair 26 residual 0.014: raw 2.792 vs expected 2.806. The stage diagnostics show
-   3 utterances with fine delays 0:4, 4000:4004, 8000:8004, no skipped frames, 331 of
-   484 frames silent. Neighbors 25 and 27 are exact, so the residual is localized to
-   this pair; trace it through the stage diagnostics if zero residual matters.
-2. The 16 kHz entry point still uses provisional pair-averaging decimation; replace it
-   with a proper anti-aliasing filter per spec/CONFORMANCE.md section 6 item 4.
-3. The 16 kHz Annex A tests 1(a) and 2(a) and the P.862.2 wideband mode are out of
+1. The 16 kHz Annex A tests 1(a) and 2(a) and the P.862.2 wideband mode are out of
    scope for this narrowband port (spec/CONFORMANCE.md section 5); no action unless
    scope changes.
-4. The Supplement 23 8 kHz set (test 1(b), 1736 pairs) is documented but not shipped;
+2. The Supplement 23 8 kHz set (test 1(b), 1736 pairs) is documented but not shipped;
    running it would broaden coverage beyond the VoIP set.
-5. No command-line scorer binary yet; README defers it to a later round.
-6. The debug-mode conformance run takes about 160 s for 40 pairs; profile release-mode
-   timing before shipping a CLI.
+3. The debug-mode conformance run takes about 160 s for 40 pairs; a release-mode run
+   of the harness and the CLI timing would be worth profiling before any large
+   batch scoring.

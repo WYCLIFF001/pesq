@@ -217,7 +217,7 @@ fn frame_range_skips_the_silent_margins() {
     // one, [10398, 10402], sums to |x[10398]| + |x[10399]| = 976, so the
     // skip stops at 12959 - 10402 = 2557.
     let signal = SignalBuffer::from_pcm(&tone_pcm(1000.0)).unwrap();
-    let range = frame_range(&signal);
+    let range = frame_range(&signal, signal.nominal_len);
     assert_eq!(range.skip_start, 0);
     assert_eq!(range.skip_end, 2557);
     assert_eq!(range.start, 0);
@@ -227,7 +227,7 @@ fn frame_range_skips_the_silent_margins() {
 #[test]
 fn frame_range_of_a_silent_signal_reaches_the_skip_caps() {
     let signal = SignalBuffer::from_pcm(&vec![0i16; 8000]).unwrap();
-    let range = frame_range(&signal);
+    let range = frame_range(&signal, signal.nominal_len);
     assert_eq!(range.skip_start, signal.nominal_len / 2);
     assert_eq!(range.skip_end, signal.nominal_len / 2);
     // Both skips consume the signal, so the processed range is empty

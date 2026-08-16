@@ -162,7 +162,12 @@ pub fn frame_disturbances(
         symmetric,
         asymmetric,
         skipped,
-        time_weights: time_weight::time_weights(frame_stop, reference.nominal_len),
+        // The time weights take the common nominal length Nmax
+        // (spec 04, 4.7 step 1).
+        time_weights: time_weight::time_weights(
+            frame_stop,
+            reference.nominal_len.max(degraded.nominal_len),
+        ),
     }
 }
 

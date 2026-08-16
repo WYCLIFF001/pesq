@@ -6,9 +6,10 @@
 //! cargo run --example basic -- <reference.wav> <degraded.wav>
 //! ```
 //!
-//! The example reads mono 16-bit PCM WAV files (skipping the 44-byte
-//! header per spec 01, 1.2 step 2) and prints the raw P.862 score and the
-//! P.862.1 MOS-LQO mapping (spec 05).
+//! The example reads mono 16-bit PCM WAV files at 16 kHz (skipping the
+//! 44-byte header per spec 01, 1.2 step 2) and prints the raw P.862 score
+//! and the P.862.1 MOS-LQO mapping (spec 05). For 8 kHz files, or for
+//! rate-aware dispatch, use the `pesq-cli` binary instead.
 
 use std::path::Path;
 

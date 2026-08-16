@@ -56,15 +56,15 @@ pub use types::PesqError;
 /// Score a reference/degraded pair (narrowband P.862) at 16 kHz.
 ///
 /// Both inputs are mono 16-bit linear PCM at 16 kHz. The model decimates
-/// to its native 8 kHz rate (spec 01, table 1.1) and follows the
-/// processing order of spec 01 section 1.15: input handling and
-/// alignment (1.2 to 1.13), length equalization (1.7), the perceptual
-/// model (spec 03), the disturbance computation (spec 04), and the
-/// scoring (spec 05). The specification prescribes no decimation filter;
-/// the provisional pair averaging of [`input::prepare_input`] attenuates
-/// the highest octave. Use [`pesq_8k`] to score 8 kHz PCM directly. The
-/// returned value is the raw P.862 score, unclipped (spec 05, 5.1); map
-/// it to MOS-LQO with [`score::mos_lqo`].
+/// to its native 8 kHz rate with the anti-aliasing filter of
+/// [`input::decimate_16k_to_8k`] (spec 01, table 1.1 and
+/// spec/CONFORMANCE.md section 6 item 4) and follows the processing
+/// order of spec 01 section 1.15: input handling and alignment
+/// (1.2 to 1.13), length equalization (1.7), the perceptual model
+/// (spec 03), the disturbance computation (spec 04), and the scoring
+/// (spec 05). Use [`pesq_8k`] to score 8 kHz PCM directly, without any
+/// rate conversion. The returned value is the raw P.862 score, unclipped
+/// (spec 05, 5.1); map it to MOS-LQO with [`score::mos_lqo`].
 ///
 /// # Errors
 ///

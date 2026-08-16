@@ -146,10 +146,12 @@ fn silence_skip_end(reference: &SignalBuffer, n_max: usize) -> usize {
 /// Frame range of spec 03 section 3.1: first processed frame
 /// `skip_start / Q` (step 3), last processed frame
 /// `(Nmax - 4800 + P - skip_end) / Q - 1` (step 4), integer divisions
-/// (spec 01, 1.1). With a fully silent signal `stop` can fall below
-/// `start`; the frame loop then processes an empty range.
-pub fn frame_range(reference: &SignalBuffer) -> FrameRange {
-    let n_max = reference.nominal_len;
+/// (spec 01, 1.1). `n_max` is the common nominal length Nmax of
+/// spec 01 section 1.7 (the larger of the two nominal lengths), the
+/// length both saved buffers have after equalization. With a fully
+/// silent signal `stop` can fall below `start`; the frame loop then
+/// processes an empty range.
+pub fn frame_range(reference: &SignalBuffer, n_max: usize) -> FrameRange {
     let skip_start = silence_skip_start(reference, n_max);
     let skip_end = silence_skip_end(reference, n_max);
     let start = skip_start / FRAME_HOP;
@@ -336,8 +338,13 @@ pub fn run_frame_loop(
     degraded: &SignalBuffer,
     utterances: &[Utterance],
 ) -> PerceptualModel {
-    let n_max = reference.nominal_len;
-    let frame_range = frame_range(reference);
+    // The common nominal length Nmax of spec 01 section 1.7: both saved
+    // buffers have Nmax + P samples after equalization, and the frame
+    // layout (3.1), the degraded bounds (3.2 step 4), and the
+    // compensation divisor (3.5 step 1) all take Nmax, not the
+    // reference's own nominal length.
+    let n_max = reference.nominal_len.max(degraded.nominal_len);
+    let frame_range = frame_range(reference, n_max);
     let frame_count = frame_range.stop + 1;
     let mut spectra = Spectra::new();
 

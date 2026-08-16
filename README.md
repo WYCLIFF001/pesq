@@ -5,7 +5,7 @@ A clean-room Rust implementation of ITU-T P.862 (PESQ), narrowband mode (8 kHz),
 ## What this repository will contain
 
 - `spec/`: a complete behavioral specification of the P.862 narrowband algorithm, written in neutral language from the ITU-T P.862 Annex A (2005) reference implementation and the published algorithm literature. Implementers work from these documents only.
-- A Rust library and a command-line scorer (to be added in later rounds).
+- A Rust library, a command-line scorer (`pesq-cli`), and examples.
 - A conformance test harness that runs the Annex A 8 kHz test vectors.
 
 ## Clean-room note
@@ -24,6 +24,39 @@ The Rust code written here will be published under MIT OR Apache-2.0. The specif
 - Round 2: Rust implementation of the model per `spec/`.
 - Round 3: conformance run against the vectors in `spec/CONFORMANCE.md`; all 40 Annex A
   test 2(b) pairs pass, see `CONVERGENCE.md`.
+- Round 4: zero-residual conformance (pair 26 traced to a wrong boundary length and
+  fixed), the 16 kHz entry point decimates with a proper anti-aliasing filter, and the
+  `pesq-cli` scorer was added.
+
+## Command-line scorer
+
+The `pesq-cli` binary scores one pair of WAV files and prints the raw P.862 score:
+
+```text
+cargo run --bin pesq-cli -- reference.wav degraded.wav
+```
+
+or, after `cargo install --path .`:
+
+```text
+pesq-cli reference.wav degraded.wav
+```
+
+The files must be mono 16-bit PCM. The entry point follows the sample rate in the file
+header: 8 kHz files are scored natively, 16 kHz files are decimated to the model rate
+with the anti-aliasing filter of `input::decimate_16k_to_8k`. The score prints with 6
+decimal places on stdout; diagnostics go to stderr and the exit code is nonzero on
+failure. The library example `cargo run --example basic -- reference.wav degraded.wav`
+prints the same score rounded to 3 decimals together with the P.862.1 MOS-LQO mapping.
+
+## Library entry points
+
+- `pesq::pesq(&ref_16k, &deg_16k)` scores 16 kHz PCM by decimating to the 8 kHz model
+  rate with a 33-tap Hamming-windowed sinc at 0.45 of the 8 kHz Nyquist frequency
+  (see `spec/CONFORMANCE.md` section 6 item 4).
+- `pesq::pesq_8k(&ref_8k, &deg_8k)` scores 8 kHz PCM natively, without any rate
+  conversion. This is the entry point the conformance harness uses.
+- `pesq::score::mos_lqo(raw)` maps a raw P.862 score to P.862.1 MOS-LQO.
 
 ## Reading order for implementers
 

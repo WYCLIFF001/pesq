@@ -14,18 +14,75 @@ use crate::types::{PADDING_SAMPLES, PesqError, SignalBuffer, Utterance};
 use crate::utterances::align_utterances;
 use crate::vad::voice_activity_detection;
 
+/// Cutoff frequency of the decimation filter: 0.45 of the 8 kHz Nyquist
+/// frequency, 1800 Hz (spec/CONFORMANCE.md section 6 item 4).
+const DECIMATOR_CUTOFF_HZ: f64 = 0.45 * 8000.0 / 2.0;
+
+/// Half-length of the decimation filter in taps: 16 per side, 33 total.
+const DECIMATOR_HALF_TAPS: usize = 16;
+
 /// Downsample a 16 kHz PCM stream to the 8 kHz rate the model operates
 /// at (spec 01, table 1.1).
 ///
 /// The public API accepts 16 kHz input while the model itself is
-/// narrowband at 8 kHz. The specification does not prescribe a decimation
-/// filter, so this provisional implementation averages pairs of samples,
-/// which attenuates the highest octave. The final decimator is chosen
-/// when the processing stages land in Round 2.
+/// narrowband at 8 kHz, so this entry point decimates by a factor of 2
+/// with a short windowed-sinc anti-aliasing filter: 33 taps, Hamming
+/// window, cutoff at 0.45 of the 8 kHz Nyquist frequency (1800 Hz),
+/// normalized to unit DC gain (spec/CONFORMANCE.md section 6 item 4).
+/// The filter is linear phase and centered on each output sample, so it
+/// introduces no delay between the two signals. The passband is flat
+/// within about 0.03 dB up to the cutoff and the stopband sits below
+/// -45 dB, so content above 4 kHz cannot alias into the 8 kHz model
+/// band. The result is rounded to the nearest sample value and clamped
+/// to the 16-bit range.
+///
+/// A trailing odd input sample has no output sample centered on it and
+/// is dropped; the output holds `pcm.len() / 2` samples.
 pub fn decimate_16k_to_8k(pcm: &[i16]) -> Vec<i16> {
-    pcm.chunks_exact(2)
-        .map(|pair| ((i32::from(pair[0]) + i32::from(pair[1])) / 2) as i16)
-        .collect()
+    let taps = decimator_taps();
+    let half = DECIMATOR_HALF_TAPS as isize;
+    let mut output = Vec::with_capacity(pcm.len() / 2);
+    for j in 0..output.capacity() {
+        let mut sum = 0.0f64;
+        for (tap_index, &coefficient) in taps.iter().enumerate() {
+            let offset = 2 * j as isize - (tap_index as isize - half);
+            if offset >= 0 && offset < pcm.len() as isize {
+                sum += coefficient * f64::from(pcm[offset as usize]);
+            }
+        }
+        output.push(sum.round().clamp(-32768.0, 32767.0) as i16);
+    }
+    output
+}
+
+/// The Hamming-windowed sinc taps of [`decimate_16k_to_8k`], computed
+/// once on first use and normalized to unit DC gain. Tap `k` belongs to
+/// sample offset `k - DECIMATOR_HALF_TAPS`.
+fn decimator_taps() -> &'static [f64] {
+    use std::sync::OnceLock;
+    static TAPS: OnceLock<Vec<f64>> = OnceLock::new();
+    TAPS.get_or_init(|| {
+        let cutoff = DECIMATOR_CUTOFF_HZ / 16000.0;
+        let length = 2 * DECIMATOR_HALF_TAPS + 1;
+        let mut taps = vec![0.0f64; length];
+        for (i, tap) in taps.iter_mut().enumerate() {
+            let n = i as isize - DECIMATOR_HALF_TAPS as isize;
+            let sinc = if n == 0 {
+                2.0 * cutoff
+            } else {
+                (2.0 * core::f64::consts::PI * cutoff * n as f64).sin()
+                    / (core::f64::consts::PI * n as f64)
+            };
+            let window =
+                0.54 - 0.46 * (2.0 * core::f64::consts::PI * i as f64 / (length - 1) as f64).cos();
+            *tap = sinc * window;
+        }
+        let sum: f64 = taps.iter().sum();
+        for tap in taps.iter_mut() {
+            *tap /= sum;
+        }
+        taps
+    })
 }
 
 /// Convert one 16 kHz input to the 8 kHz signal buffer of spec 01
@@ -111,17 +168,81 @@ mod tests {
     use crate::types::WINDOW_SAMPLES;
 
     #[test]
-    fn decimation_halves_the_rate_and_averages_pairs() {
+    fn decimation_halves_the_rate_and_drops_a_trailing_odd_sample() {
         let input = [100i16, 200, 300, 400, 500, 600];
-        let output = decimate_16k_to_8k(&input);
-        assert_eq!(output, [150, 350, 550]);
+        assert_eq!(decimate_16k_to_8k(&input).len(), 3);
+        let odd = [100i16, 200, 300];
+        assert_eq!(decimate_16k_to_8k(&odd).len(), 1);
     }
 
+    /// A constant signal passes through with unit DC gain (the taps are
+    /// normalized so their sum is exactly 1). The first samples still see
+    /// the leading zeros of the margin, so only the settled middle of the
+    /// output must equal the input value.
     #[test]
-    fn decimation_drops_a_trailing_odd_sample() {
-        let input = [100i16, 200, 300];
+    fn decimation_has_unit_dc_gain() {
+        let input = vec![1000i16; 128];
         let output = decimate_16k_to_8k(&input);
-        assert_eq!(output, [150]);
+        for &sample in &output[24..40] {
+            assert_eq!(sample, 1000);
+        }
+    }
+
+    /// Impulse response energy: an impulse of amplitude 30000 at the
+    /// input spreads into the output as the taps from index 16 upward;
+    /// their energy is 0.0758388 in the unit-DC-gain windowed-sinc design
+    /// of the function docs. The constant pins the filter design so an
+    /// accidental change of window or cutoff fails the test.
+    #[test]
+    fn decimation_impulse_response_energy() {
+        let mut input = vec![0i16; 256];
+        input[0] = 30000;
+        let output = decimate_16k_to_8k(&input);
+        let energy: f64 = output.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+        let normalized = energy / (30000.0 * 30000.0);
+        assert!(
+            (normalized - 0.075_838_833_052_037_23).abs() < 1e-4,
+            "normalized impulse response energy {normalized} diverged from the pinned design"
+        );
+    }
+
+    /// Frequency response sanity: sine RMS ratios of the settled output.
+    /// The passband (400 Hz, 1000 Hz) is within 0.5 dB of unity and the
+    /// cutoff sits at the -6 dB point; the stopband (3000 Hz, 4000 Hz)
+    /// and the 5000 Hz tone aliasing to 3000 Hz are attenuated by more
+    /// than 40 dB.
+    #[test]
+    fn decimation_frequency_response() {
+        for &(frequency, lower, upper) in &[
+            (400.0f64, 0.99f64, 1.01f64),
+            (1000.0f64, 0.98f64, 1.02f64),
+            (1800.0f64, 0.48f64, 0.52f64),
+            (3000.0f64, 0.0f64, 0.01f64),
+            (4000.0f64, 0.0f64, 0.01f64),
+            (5000.0f64, 0.0f64, 0.01f64),
+        ] {
+            let input: Vec<i16> = (0..1600)
+                .map(|i| {
+                    let phase = 2.0 * core::f64::consts::PI * frequency * i as f64 / 16000.0;
+                    (phase.sin() * 10000.0).round() as i16
+                })
+                .collect();
+            let output = decimate_16k_to_8k(&input);
+            let rms = |samples: &[i16]| -> f64 {
+                (samples
+                    .iter()
+                    .map(|&s| f64::from(s) * f64::from(s))
+                    .sum::<f64>()
+                    / samples.len() as f64)
+                    .sqrt()
+            };
+            // Skip the transient at the start of the output.
+            let gain = rms(&output[200..600]) / rms(&input);
+            assert!(
+                gain >= lower && gain <= upper,
+                "gain {gain:.5} at {frequency} Hz outside [{lower}, {upper}]"
+            );
+        }
     }
 
     #[test]
