@@ -145,7 +145,7 @@ fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
     println!(
         "pair {index:2}: {n_max:6} {coarse:6} {utt:3} [{delays:60}] {skip:4} \
          {start}..={stop:4} of {frames:4} {silent:4} {pitch_ref:7.2}/{pitch_deg:7.2} \
-         {loud_ref:6.2}/{loud_deg:6.2} {sym:7.3} {asym:7.3} {raw:.3}",
+         {loud_ref:6.2}/{loud_deg:6.2} {sym:7.3} {asym:7.3} {raw:.6}",
         coarse = pair.utterances.first().map_or(0, |u| u.coarse_delay),
         utt = pair.utterances.len(),
         delays = delays.join(" "),

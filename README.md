@@ -20,9 +20,10 @@ The Rust code written here will be published under MIT OR Apache-2.0. The specif
 
 ## Status
 
-- Round 1 (this state): specification complete, awaiting implementer review.
+- Round 1: specification complete, awaiting implementer review.
 - Round 2: Rust implementation of the model per `spec/`.
-- Round 3: conformance run against the vectors in `spec/CONFORMANCE.md`.
+- Round 3: conformance run against the vectors in `spec/CONFORMANCE.md`; all 40 Annex A
+  test 2(b) pairs pass, see `CONVERGENCE.md`.
 
 ## Reading order for implementers
 
