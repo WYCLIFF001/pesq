@@ -13,7 +13,7 @@ mod table;
 use crate::types::{FrameRange, SignalBuffer, Utterance};
 use crate::types::{MARGIN_SAMPLES, PADDING_SAMPLES, WINDOW_SAMPLES};
 use rustfft::num_complex::Complex;
-use rustfft::{Fft, FftPlanner};
+use rustfft::Fft;
 
 /// Frame length F in samples, 32 ms (spec 03, 3.1).
 pub const FRAME_LEN: usize = 256;
@@ -81,9 +81,8 @@ struct Spectra {
 
 impl Spectra {
     fn new() -> Self {
-        let mut planner = FftPlanner::<f32>::new();
         Self {
-            fft: planner.plan_fft_forward(FRAME_LEN),
+            fft: crate::dsp_fft::forward_plan(FRAME_LEN),
             window: crate::dsp::hann_window(FRAME_LEN),
             scratch: Vec::with_capacity(FRAME_LEN),
         }

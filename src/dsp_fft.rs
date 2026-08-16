@@ -7,18 +7,37 @@
 //! `rustfft` complex transforms provide both; this module adds the real
 //! packing and the three correlation products of spec 02 section 2.8.
 
-use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
 
 /// Forward real FFT of a power-of-two length `T` buffer.
+/// Shared FFT planner: one lazily initialized planner per process, held
+/// behind a mutex. `rustfft`'s planner caches one plan per (size,
+/// direction) internally, so repeated calls with the same size reuse
+/// the same `Arc` plan instead of rebuilding it per transform.
+fn shared_planner() -> &'static std::sync::Mutex<FftPlanner<f32>> {
+    use std::sync::{Mutex, OnceLock};
+    static PLANNER: OnceLock<Mutex<FftPlanner<f32>>> = OnceLock::new();
+    PLANNER.get_or_init(|| Mutex::new(FftPlanner::new()))
+}
+
+/// Forward complex FFT plan for `len`, from the shared planner cache.
+pub(crate) fn forward_plan(len: usize) -> std::sync::Arc<dyn Fft<f32>> {
+    shared_planner().lock().unwrap().plan_fft_forward(len)
+}
+
+/// Inverse complex FFT plan for `len`, from the shared planner cache.
+pub(crate) fn inverse_plan(len: usize) -> std::sync::Arc<dyn Fft<f32>> {
+    shared_planner().lock().unwrap().plan_fft_inverse(len)
+}
+
 ///
 /// Returns the T/2 + 1 complex bins of spec 02 section 2.1, interleaved
 /// as (real, imag) pairs in positions 2k and 2k+1 for k = 0..=T/2, for
 /// a total of T + 2 floats. The transform is un-normalized.
 pub fn real_fft(input: &[f32]) -> Vec<f32> {
     let len = input.len();
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(len);
+    let fft = forward_plan(len);
     let mut buffer: Vec<Complex<f32>> = input.iter().map(|&re| Complex::new(re, 0.0)).collect();
     fft.process(&mut buffer);
     let mut packed = Vec::with_capacity(len + 2);
@@ -38,8 +57,7 @@ pub fn real_fft(input: &[f32]) -> Vec<f32> {
 /// The 1/T factor of the inverse transform is applied (spec 02, 2.1).
 pub fn inverse_real_fft(packed: &[f32]) -> Vec<f32> {
     let len = packed.len() - 2;
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_inverse(len);
+    let fft = inverse_plan(len);
     let mut buffer = vec![Complex::new(0.0, 0.0); len];
     for k in 0..=len / 2 {
         buffer[k] = Complex::new(packed[2 * k], packed[2 * k + 1]);
