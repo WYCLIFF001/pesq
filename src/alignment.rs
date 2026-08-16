@@ -31,7 +31,8 @@ pub fn coarse_delay_whole(reference: &VadData, degraded: &VadData) -> i32 {
 
 /// Per-utterance coarse estimate of spec 01 section 1.9 step 7, seeded
 /// with the whole-signal or utterance coarse delay `seed`, restricted to
-/// the search window `[s0, s1)` of the reference.
+/// the search window `[s0, s1)` of the reference. The seed itself is
+/// returned when the correlation does not run.
 pub fn coarse_delay_search(
     reference: &VadData,
     degraded: &VadData,
@@ -39,27 +40,10 @@ pub fn coarse_delay_search(
     s1: usize,
     seed: i32,
 ) -> i32 {
-    let window_divisor = WINDOW_SAMPLES as i32;
-    let mut s0 = s0;
-    let mut nr = s1 - s0;
-    let mut sd = s0 as i32 + seed / window_divisor;
-    if sd < 0 {
-        s0 = ((-seed) / window_divisor) as usize;
-        sd = 0;
-        nr = s1 - s0;
+    match coarse_correlation(reference, degraded, s0, s1, seed) {
+        Some((estimate, _)) => estimate,
+        None => seed,
     }
-    let mut nd = nr;
-    if sd as usize + nd > degraded.window_count {
-        nd = degraded.window_count - sd as usize;
-    }
-    if nr <= 1 || nd <= 1 {
-        return seed;
-    }
-    let x = &reference.log_vad[s0..s0 + nr];
-    let y = &degraded.log_vad[sd as usize..sd as usize + nd];
-    let correlation = correlate(x, y);
-    let (best_index, _) = maximizer(&correlation, nr - 1);
-    (best_index as i32 - nr as i32 + 1) * window_divisor + seed
 }
 
 /// Fine time alignment of spec 01 section 1.10 for one utterance search
@@ -389,4 +373,53 @@ mod tests {
         let zeros = [0.0f32; 9];
         assert_eq!(lag_from_correlation(&zeros, 4), 0);
     }
+}
+
+/// Per-utterance coarse correlation of spec 01 section 1.9 step 7,
+/// returning the raw correlation output alongside the estimate.
+///
+/// The clamps of step 7 apply as in [`coarse_delay_search`]: the
+/// degraded start sd = s0 + seed/W, with s0 moved right when sd would
+/// be negative, and nd = nr shortened to the degraded window count.
+/// Returns `None` when the correlation does not run (either clamped
+/// length at most 1, or the clamp moved s0 past s1), in which case the
+/// estimate is the seed.
+///
+/// The split passes of spec 01 section 1.13 step 4 need the raw output
+/// values: each correlation writes nr + nd - 1 values at scratch
+/// offsets 0..nr + nd - 2 and thereby corrupts the split-pass window
+/// that shares the scratch (spec 01, section 1.13.1).
+pub(crate) fn coarse_correlation(
+    reference: &VadData,
+    degraded: &VadData,
+    s0: usize,
+    s1: usize,
+    seed: i32,
+) -> Option<(i32, Vec<f32>)> {
+    let window_divisor = WINDOW_SAMPLES as i32;
+    let mut s0 = s0;
+    let mut sd = s0 as i32 + seed / window_divisor;
+    if sd < 0 {
+        s0 = ((-seed) / window_divisor) as usize;
+        sd = 0;
+    }
+    if s0 >= s1 {
+        return None;
+    }
+    let nr = s1 - s0;
+    let mut nd = nr;
+    if sd as usize + nd > degraded.window_count {
+        nd = degraded.window_count - sd as usize;
+    }
+    if nr <= 1 || nd <= 1 {
+        return None;
+    }
+    let x = &reference.log_vad[s0..s0 + nr];
+    let y = &degraded.log_vad[sd as usize..sd as usize + nd];
+    let correlation = correlate(x, y);
+    let (best_index, _) = maximizer(&correlation, nr - 1);
+    Some((
+        (best_index as i32 - nr as i32 + 1) * window_divisor + seed,
+        correlation,
+    ))
 }

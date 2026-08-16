@@ -39,23 +39,23 @@ pub fn voice_activity_detection(buffer: &SignalBuffer) -> VadData {
         })
         .collect();
 
-    // Step 3: noise floor m and the per-window floor. The floor runs
-    // before the threshold of step 2 is derived, so that the mean sits
-    // at or above the floor and the empty-Q case of step 4 stays
-    // unreachable (the minimum window is always at or below the mean,
-    // as argued in spec 01 section 1.8 step 4).
+    // Step 2: initial threshold is the mean of the RAW window energies,
+    // taken before the floor of step 3 is applied (spec 01, 1.8 step 2).
+    let mean_all = energy.iter().map(|&e| f64::from(e)).sum::<f64>() / window_count as f64;
+    let mut threshold = mean_all as f32;
+
+    // Step 3: noise floor m and the per-window floor.
     let maximum = energy.iter().copied().fold(0.0f32, f32::max);
     let noise_floor = if maximum > 0.0 { maximum * 1e-4 } else { 1.0 };
     for e in energy.iter_mut() {
         *e = e.max(noise_floor);
     }
 
-    // Step 2: initial threshold is the mean of all window energies.
-    let mean_all = energy.iter().map(|&e| f64::from(e)).sum::<f64>() / window_count as f64;
-    let mut threshold = mean_all as f32;
-
     // Step 4: twelve threshold iterations over the window set Q of
     // energies at or below the threshold; the update is unconditional.
+    // An empty Q leaves both sums at 0 and sets t to 0, where it stays:
+    // reachable when the raw mean of step 2 sits below the floor, for
+    // example on an all-silent signal (spec 01, 1.8 step 4).
     for _ in 0..THRESHOLD_ITERATIONS {
         let (sum, count): (f64, usize) = energy
             .iter()
@@ -248,10 +248,14 @@ mod tests {
 
     #[test]
     fn vad_on_silence_is_all_zero_in_the_log_domain() {
+        // The raw mean of step 2 is 0 and the floored energies all sit
+        // above it, so every Q is empty, the threshold stays 0 (spec 01,
+        // 1.8 steps 2 to 4), every window counts as speech in step 5,
+        // and the log-domain values stay 0 against the floor m.
         let buffer = SignalBuffer::from_pcm(&vec![0i16; 4000]).unwrap();
         let vad = voice_activity_detection(&buffer);
-        assert_eq!(vad.threshold, -1.0);
-        assert_eq!(vad.signal_level, 0.0);
+        assert_eq!(vad.threshold, 0.0);
+        assert_eq!(vad.signal_level, 1.0);
         assert_eq!(vad.noise_level, 1.0);
         assert!(vad.log_vad.iter().all(|&l| l == 0.0));
         assert!(vad.energy.iter().all(|&e| e >= 0.0));

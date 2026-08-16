@@ -6,7 +6,7 @@
 //! spreading. [`crate::utterances`] applies an accepted split to the
 //! utterance list.
 
-use crate::alignment::coarse_delay_search;
+use crate::alignment::coarse_correlation;
 use crate::dsp::{hann_window, spectral_cross_correlate};
 use crate::types::{ALIGN_FFT_LEN, SignalBuffer, VadData, WINDOW_SAMPLES};
 use crate::utterances::UtteranceWork;
@@ -20,6 +20,11 @@ const SPLIT_GRID_STEP: usize = 4;
 
 /// Maximum number of split candidates (spec 01, 1.13 step 3).
 const SPLIT_MAX_CANDIDATES: usize = 40;
+
+/// Scratch offset of the split-pass window region, 3A + 6 floats from
+/// the scratch base (spec 01, 1.13.1). Step-4 correlation outputs that
+/// reach past this offset overwrite the window coefficients there.
+const SCRATCH_WINDOW_OFFSET: usize = 3 * ALIGN_FFT_LEN + 6;
 
 /// A split accepted by the rules of spec 01 section 1.13 step 8.
 pub(crate) struct Split {
@@ -78,16 +83,32 @@ pub(crate) fn best_split(
         return None;
     }
 
-    // Step 4: per-candidate coarse estimates, left and right, seeded
-    // with the utterance coarse estimate.
-    let left_estimates: Vec<i32> = candidates
-        .iter()
-        .map(|&c| coarse_delay_search(ref_vad, deg_vad, start, c, coarse))
-        .collect();
-    let right_estimates: Vec<i32> = candidates
-        .iter()
-        .map(|&c| coarse_delay_search(ref_vad, deg_vad, c, end, coarse))
-        .collect();
+    // Step 4: per-candidate coarse estimates, left then right per
+    // candidate, seeded with the utterance coarse estimate. The coarse
+    // correlations share the scratch with the fine-pass window, so the
+    // effective window of spec 01 section 1.13.1 is derived here: the
+    // Hann fill runs once per split attempt, and every correlation that
+    // runs overwrites the window coefficients its output reaches, in
+    // call order.
+    let mut effective_window = hann_window(ALIGN_FFT_LEN);
+    let mut left_estimates = Vec::with_capacity(candidates.len());
+    let mut right_estimates = Vec::with_capacity(candidates.len());
+    for &candidate in &candidates {
+        match coarse_correlation(ref_vad, deg_vad, start, candidate, coarse) {
+            Some((estimate, correlation)) => {
+                corrupt_window(&mut effective_window, &correlation);
+                left_estimates.push(estimate);
+            }
+            None => left_estimates.push(coarse),
+        }
+        match coarse_correlation(ref_vad, deg_vad, candidate, end, coarse) {
+            Some((estimate, correlation)) => {
+                corrupt_window(&mut effective_window, &correlation);
+                right_estimates.push(estimate);
+            }
+            None => right_estimates.push(coarse),
+        }
+    }
 
     // Step 5: the forward fine pass. Each pass starts fresh at the
     // first candidate whose forward confidence is not yet computed and
@@ -105,7 +126,8 @@ pub(crate) fn best_split(
     let mut i = 0;
     while i < count {
         let seed = left_estimates[i];
-        let mut pass = SplitAccumulator::new(reference, degraded, start, seed, false);
+        let mut pass =
+            SplitAccumulator::new(reference, degraded, start, seed, false, &effective_window);
         let mut j = i;
         while j < count {
             pass.advance_to(candidates[j] as i64 * WINDOW_SAMPLES as i64);
@@ -147,7 +169,8 @@ pub(crate) fn best_split(
             break;
         };
         let seed = right_estimates[start_index];
-        let mut pass = SplitAccumulator::new(reference, degraded, end, seed, true);
+        let mut pass =
+            SplitAccumulator::new(reference, degraded, end, seed, true, &effective_window);
         let mut k = start_index;
         loop {
             pass.advance_to(candidates[k] as i64 * WINDOW_SAMPLES as i64);
@@ -222,7 +245,9 @@ struct SplitAccumulator<'a> {
 impl<'a> SplitAccumulator<'a> {
     /// A fresh accumulation starting at `boundary` (the utterance start
     /// for a forward pass, the utterance end for a backward pass) with
-    /// the initial delay `seed`.
+    /// the initial delay `seed`. `window` is the effective split window
+    /// of spec 01 section 1.13.1, the Hann fill partly overwritten by
+    /// the step-4 correlation outputs of this split attempt.
     ///
     /// Forward (step 5): the reference cursor starts at `boundary * W`
     /// and the negative-degraded-cursor clamp of 1.10 step 3 applies as
@@ -239,6 +264,7 @@ impl<'a> SplitAccumulator<'a> {
         boundary: usize,
         seed: i32,
         backward: bool,
+        window: &[f32],
     ) -> Self {
         let mut ref_cursor = if backward {
             boundary as i64 * WINDOW_SAMPLES as i64 - ALIGN_FFT_LEN as i64
@@ -262,7 +288,7 @@ impl<'a> SplitAccumulator<'a> {
             ref_cursor,
             deg_cursor,
             backward,
-            window: hann_window(ALIGN_FFT_LEN),
+            window: window.to_vec(),
             histogram: vec![0.0f32; ALIGN_FFT_LEN],
             hsum: 0.0,
             frame_ref: vec![0.0f32; ALIGN_FFT_LEN],
@@ -350,5 +376,27 @@ impl SplitAccumulator<'_> {
             0.0
         } as f32;
         (seed + folded, confidence)
+    }
+}
+
+/// Apply one step-4 correlation output to the effective split window
+/// (spec 01, section 1.13.1).
+///
+/// The correlation output of nr + nd - 1 values sits at scratch offsets
+/// 0..nr + nd - 2, and the window occupies offsets 3A + 6 onwards, so
+/// every output value whose offset lands inside the window region
+/// replaces the Hann coefficient there. Later correlations overwrite
+/// again, so the writes must be applied in call order (candidate order,
+/// left estimate then right estimate per candidate).
+fn corrupt_window(window: &mut [f32], correlation: &[f32]) {
+    if correlation.len() <= SCRATCH_WINDOW_OFFSET {
+        return;
+    }
+    let reach = (correlation.len() - SCRATCH_WINDOW_OFFSET).min(window.len());
+    for (slot, &value) in window[..reach]
+        .iter_mut()
+        .zip(&correlation[SCRATCH_WINDOW_OFFSET..])
+    {
+        *slot = value;
     }
 }

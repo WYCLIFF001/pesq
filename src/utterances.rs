@@ -149,9 +149,9 @@ fn clamp_boundaries(utterances: &mut [UtteranceWork], degraded_nominal: usize) {
 /// Utterance splitting of spec 01 section 1.13: scan the utterance list
 /// in order, attempt one split per utterance with at least 200 windows
 /// of speech, and stop once the count reaches [`MAX_UTTERANCES`]. After
-/// a split the scan continues with the right half (the same speech
-/// position, per 1.13 step 11) and the search windows are re-derived
-/// from the new boundaries.
+/// a split the scan continues at the same index, which now holds the
+/// left half (1.13 step 11), so the left half's own possible second
+/// split is never skipped.
 fn split_utterances(
     utterances: &mut Vec<UtteranceWork>,
     reference: &SignalBuffer,
@@ -210,15 +210,15 @@ fn split_utterances(
         }
         utterances[u] = left;
         utterances.insert(u + 1, right);
-        // Step 11: re-derive the search windows from the boundaries and
-        // continue scanning from the same speech position, i.e. with the
-        // right half next.
-        let last = ref_vad.window_count - 1;
-        for work in utterances.iter_mut() {
-            work.search_start = work.start.saturating_sub(75);
-            work.search_end = (work.end + 75).min(last);
+        // Step 11: the utterances shifted right by the split take their
+        // own current boundaries as their search windows (no 75-window
+        // widening); the two halves keep the search window inherited in
+        // step 9. The scan then continues at the same index, which now
+        // holds the left half.
+        for work in utterances.iter_mut().skip(u + 2) {
+            work.search_start = work.start;
+            work.search_end = work.end;
         }
-        u += 1;
     }
 }
 

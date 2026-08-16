@@ -107,9 +107,9 @@ fn split_finds_the_delay_jump_in_a_long_utterance() {
     let deg_vad = voice_activity_detection(&degraded);
     let utterances = align_utterances(&reference, &degraded, &ref_vad, &deg_vad).unwrap();
     // The split cuts inside a wide band around the delay jump; the
-    // split can cascade (1.13 step 11 continues the scan with the right
-    // half), so the list may hold three utterances, but the first delay
-    // sits near 256 and the last near 0.
+    // split can cascade (1.13 step 11 re-examines the left half at the
+    // same index), so the list may hold three utterances, but the first
+    // delay sits near 256 and the last near 0.
     assert!(utterances.len() >= 2, "expected a split: {utterances:?}");
     let first = utterances[0];
     let last = utterances[utterances.len() - 1];
@@ -244,7 +244,7 @@ fn skip_flags_ignore_small_jumps() {
 fn align_utterances_finds_one_utterance_for_silence() {
     // For an all-silent input the VAD floor of spec 01 section 1.8
     // step 3 leaves every interior window positive (the threshold of
-    // step 5 drops to -1, so step 6 negates nothing), and 1.11 reads
+    // step 4 stays 0, so step 6 negates nothing), and 1.11 reads
     // that as one giant utterance with zero log-domain activity.
     let reference = SignalBuffer::from_pcm(&vec![0i16; 4000]).unwrap();
     let degraded = reference.clone();
