@@ -92,7 +92,7 @@ For each indicator (symmetric D and asymmetric A):
 
 1. Sweep a syllable window of 20 frames with a step of 10 frames over [frame_start, frame_stop]: for each window start s (s = frame_start, frame_start + 10, ..., while s <= frame_stop):
    a. Syllable value: ((1/20) * sum over f = s..s+19, f <= frame_stop, of X[f]^6)^(1/6), where X is the indicator array. The denominator is always 20; frames beyond frame_stop contribute 0.
-   b. Accumulate S += (weight[s - frame_start] * syllable)^2 and T += weight[s - frame_start]^2, where weight is the time weight of the frame at the window start (4.7).
+   b. Accumulate S += (weight[s - frame_start] * syllable)^2 and T += weight[s - frame_start]^2, where weight is the time weight of the frame at the window start (4.7). The weight index is the window start relative to frame_start, i.e. weight[s - frame_start], not the absolute frame index s. (For signals under 1000 frames all weights are 1 and the distinction disappears, but the relative index is the reference behaviour.)
 2. The aggregated indicator is (S / T)^(1/2).
 
 Both indicators use the exponent 6 within a syllable and the exponent 2 over time. The symmetric indicator comes from D (per-frame norm exponent 2, 4.2) and the asymmetric indicator from A (per-frame norm exponent 1, 4.3). These three pairs of exponents (2/1 per frame, 6 per syllable, 2 over time) are the published PESQ values.

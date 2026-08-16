@@ -23,7 +23,7 @@ For a frame at reference start sample r0 = 2400 + frame*Q:
 
 ## 3.3 Frequency warping to Bark bands
 
-The 128 Hz bins are grouped into B = 42 Bark bands. Band b consumes the next n[b] bins (from the group count column of Table 1), in order of increasing frequency, starting at bin 1 (bin 0 is already zero). The group counts sum to 128.
+The 128 Hz bins are grouped into B = 42 Bark bands. Band b consumes the next n[b] bins (from the group count column of Table 1), in order of increasing frequency, starting at bin 0 (which is already zero) and consuming bins 0..=127. The group counts sum to 128. The Nyquist bin (bin 128) is not produced by section 3.2 and is not part of the grouping. Starting the grouping at bin 0 matters: each band's correction factor and absolute threshold from Table 1 belong to that band's bin range, and shifting the grouping by one bin misassigns every threshold and correction, which breaks the frequency response compensation of 3.5, the audibility sums of 3.4, the loudness of 3.6, and the asymmetry factor of 04 section 4.3.
 
 1. For band b: sum the power spectrum values of its n[b] bins.
 2. Multiply the sum by the power density correction factor c[b] from Table 1.
