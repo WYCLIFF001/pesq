@@ -53,6 +53,130 @@ pub mod vad;
 
 pub use types::PesqError;
 
+/// Prepared reference signal for scoring several degraded variants of
+/// one reference utterance.
+///
+/// [`PesqContext::new`] runs the reference-side preprocessing of the
+/// 16 kHz pipeline once (spec 01 sections 1.2 to 1.8 on the reference:
+/// decimation, level calibration, the IRS receive filter and the saved
+/// model copy, DC removal, the input IIR cascade, and the VAD). Each
+/// [`PesqContext::score`] call then pays only the degraded-side
+/// preprocessing and the pair-wise stages (VAD of the degraded signal,
+/// alignment, the perceptual model, disturbance processing, and
+/// scoring), so a harness scoring N degraded variants of one utterance
+/// pays the reference preprocessing once instead of N times.
+///
+/// Scores are bit-identical to [`pesq`]. A degraded signal longer than
+/// the reference changes the shared normalization divisor of spec 01
+/// section 1.3 step 3, so such a pair recomputes the reference chain
+/// with that divisor instead of reusing the prepared state.
+///
+/// # Errors
+///
+/// The same as [`pesq`]: [`PesqError::SignalTooShort`] when an input
+/// holds fewer than 2000 samples after decimation, and
+/// [`PesqError::NoUtterancesFound`] when no utterance qualifies.
+pub struct PesqContext {
+    /// The prepared 8 kHz reference buffer, kept unmodified for pairs
+    /// whose degraded signal is longer than the reference.
+    original: types::SignalBuffer,
+    /// Working reference buffer after the reference-side stages of
+    /// spec 01 sections 1.3 to 1.6.
+    working: types::SignalBuffer,
+    /// Saved model copy of the reference (spec 01, 1.4 step 2).
+    model: types::SignalBuffer,
+    /// Reference VAD output (spec 01, 1.8).
+    vad: types::VadData,
+    /// Whether the entry point is the 8 kHz rate (no decimation).
+    eight_k: bool,
+}
+
+impl PesqContext {
+    /// Prepare a 16 kHz reference, mirroring the input handling of
+    /// [`pesq`]: the PCM is decimated to the native 8 kHz model rate
+    /// before preprocessing.
+    pub fn new(ref_wav: &[i16]) -> Result<Self, PesqError> {
+        Self::from_buffer(input::prepare_input(ref_wav)?, false)
+    }
+
+    /// Prepare a reference at the native 8 kHz model rate, mirroring
+    /// the input handling of [`pesq_8k`]: the PCM feeds the pipeline
+    /// without rate conversion. Otherwise identical to
+    /// [`PesqContext::new`].
+    pub fn new_8k(ref_wav: &[i16]) -> Result<Self, PesqError> {
+        Self::from_buffer(types::SignalBuffer::from_pcm(ref_wav)?, true)
+    }
+
+    /// Run the reference-side stages of spec 01 sections 1.3 to 1.8 on
+    /// an 8 kHz signal buffer, with the shared normalization divisor of
+    /// spec 01 section 1.3 step 3 derived from the reference alone.
+    fn from_buffer(reference: types::SignalBuffer, eight_k: bool) -> Result<Self, PesqError> {
+        let original = reference.clone();
+        let mut working = reference;
+        let divisor =
+            (original.nominal_len - 2 * types::MARGIN_SAMPLES + types::PADDING_SAMPLES) as f64;
+        input_buffers::normalize_one(&mut working, divisor);
+        dsp::apply_filter_curve(&mut working.samples, &dsp::IRS_RECEIVE_CURVE);
+        let model = working.clone();
+        input_filters::remove_dc(&mut working);
+        input_filters::input_iir_filter(&mut working);
+        let vad = vad::voice_activity_detection(&working);
+        Ok(Self {
+            original,
+            working,
+            model,
+            vad,
+            eight_k,
+        })
+    }
+
+    /// Score one degraded signal against the prepared reference, at the
+    /// sample rate of the constructor (16 kHz for [`PesqContext::new`],
+    /// 8 kHz for [`PesqContext::new_8k`]).
+    ///
+    /// The reference-side stages of spec 01 run once at construction;
+    /// this call runs the degraded-side stages and the pair-wise
+    /// alignment, then the perceptual model, the disturbance
+    /// computation, and the scoring. A degraded signal longer than the
+    /// prepared reference recomputes the reference chain with the
+    /// larger shared divisor, exactly as [`pesq`] would.
+    pub fn score(&self, deg_wav: &[i16]) -> Result<f32, PesqError> {
+        let mut degraded = if self.eight_k {
+            types::SignalBuffer::from_pcm(deg_wav)?
+        } else {
+            input::prepare_input(deg_wav)?
+        };
+        if degraded.nominal_len > self.original.nominal_len {
+            // spec 01, 1.3 step 3: the shared divisor is the larger
+            // nominal length's, so the reference chain built at
+            // construction no longer applies; rerun the full pipeline.
+            return score_pair(self.original.clone(), degraded);
+        }
+        let n_max = self.original.nominal_len;
+        let divisor = (n_max - 2 * types::MARGIN_SAMPLES + types::PADDING_SAMPLES) as f64;
+        input_buffers::normalize_one(&mut degraded, divisor);
+        dsp::apply_filter_curve(&mut degraded.samples, &dsp::IRS_RECEIVE_CURVE);
+        let mut model_degraded = degraded.clone();
+        input_filters::remove_dc(&mut degraded);
+        input_filters::input_iir_filter(&mut degraded);
+        let deg_vad = vad::voice_activity_detection(&degraded);
+        let utterances =
+            utterances::align_utterances(&self.working, &degraded, &self.vad, &deg_vad)?;
+        let mut model_reference = self.model.clone();
+        model_reference
+            .samples
+            .resize(n_max + types::PADDING_SAMPLES, 0.0);
+        model_degraded
+            .samples
+            .resize(n_max + types::PADDING_SAMPLES, 0.0);
+        Ok(score_aligned(input::AlignedPair {
+            reference: model_reference,
+            degraded: model_degraded,
+            utterances,
+        }))
+    }
+}
+
 /// Score a reference/degraded pair (narrowband P.862) at 16 kHz.
 ///
 /// Both inputs are mono 16-bit linear PCM at 16 kHz. The model decimates
@@ -104,8 +228,13 @@ fn score_pair(
     reference: types::SignalBuffer,
     degraded: types::SignalBuffer,
 ) -> Result<f32, PesqError> {
-    let pair = input::process_pair(reference, degraded)?;
+    Ok(score_aligned(input::process_pair(reference, degraded)?))
+}
 
+/// The stages after the input pipeline of [`input::process_pair`]: the
+/// perceptual model of spec 03, the disturbance computation of spec 04,
+/// and the scoring of spec 05, on an aligned pair.
+fn score_aligned(pair: input::AlignedPair) -> f32 {
     // spec 03: perceptual model over the saved copies with the
     // per-utterance delays.
     let model = psychoacoustic::run_frame_loop(&pair.reference, &pair.degraded, &pair.utterances);
@@ -121,10 +250,7 @@ fn score_pair(
     let indicators = disturbance::aggregate(&frames, model.frame_range.start);
 
     // spec 05, 5.1: the raw score from the two indicators.
-    Ok(score::raw_score(
-        indicators.symmetric,
-        indicators.asymmetric,
-    ))
+    score::raw_score(indicators.symmetric, indicators.asymmetric)
 }
 
 #[cfg(test)]
@@ -186,4 +312,55 @@ mod tests {
         assert!(score <= 4.5, "raw score {score} exceeds 4.5");
         assert!(score > 3.5, "identical pair scored only {score}");
     }
+
+    /// A 16 kHz noise-burst signal of `seconds` duration (the pattern of
+    /// the criterion bench), for exercising the reference preprocessing.
+    fn noise_bursts(seconds: usize, seed: u32) -> Vec<i16> {
+        let burst_samples = 60 * 2 * WINDOW_SAMPLES;
+        let cycle_samples = 90 * 2 * WINDOW_SAMPLES;
+        let mut pcm = vec![0i16; seconds * 16_000];
+        let mut state = seed;
+        let mut offset = 0usize;
+        while offset + burst_samples <= pcm.len() {
+            for sample in &mut pcm[offset..offset + burst_samples] {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *sample = (((state as f32 / u32::MAX as f32) * 2.0 - 1.0) * 3000.0) as i16;
+            }
+            offset += cycle_samples;
+        }
+        pcm
+    }
+
+    #[test]
+    fn pesq_context_scores_bit_identically_to_pesq() {
+        let reference = noise_bursts(2, 21);
+        let degraded = noise_bursts(2, 42);
+        let expected = pesq(&reference, &degraded).unwrap();
+        let context = PesqContext::new(&reference).unwrap();
+        assert_eq!(context.score(&degraded).unwrap().to_bits(), expected.to_bits());
+        let variant = noise_bursts(2, 43);
+        assert_eq!(
+            context.score(&variant).unwrap().to_bits(),
+            pesq(&reference, &variant).unwrap().to_bits()
+        );
+    }
+
+    #[test]
+    fn pesq_context_8k_scores_bit_identically_to_pesq_8k() {
+        let reference = input::decimate_16k_to_8k(&noise_bursts(2, 21));
+        let degraded = input::decimate_16k_to_8k(&noise_bursts(2, 42));
+        let expected = pesq_8k(&reference, &degraded).unwrap();
+        let context = PesqContext::new_8k(&reference).unwrap();
+        assert_eq!(context.score(&degraded).unwrap().to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn pesq_context_recomputes_for_a_longer_degraded_signal() {
+        let reference = noise_bursts(2, 21);
+        let degraded = noise_bursts(3, 42);
+        let expected = pesq(&reference, &degraded).unwrap();
+        let context = PesqContext::new(&reference).unwrap();
+        assert_eq!(context.score(&degraded).unwrap().to_bits(), expected.to_bits());
+    }
+
 }

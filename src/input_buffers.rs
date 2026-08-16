@@ -28,7 +28,7 @@ pub fn normalize_levels(reference: &mut SignalBuffer, degraded: &mut SignalBuffe
 }
 
 /// Level normalization for one signal buffer (spec 01, 1.3 steps 1 to 5).
-fn normalize_one(buffer: &mut SignalBuffer, divisor: f64) {
+pub(crate) fn normalize_one(buffer: &mut SignalBuffer, divisor: f64) {
     // Step 1: scratch copy, then step 2: the alignment filter.
     let mut scratch = buffer.samples.clone();
     apply_filter_curve(&mut scratch, &ALIGNMENT_CURVE);

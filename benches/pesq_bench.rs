@@ -44,5 +44,33 @@ fn bench_pesq_10s_pair(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_pesq_10s_pair);
+criterion_group!(benches, bench_pesq_10s_pair, bench_pesq_context_4_variants);
 criterion_main!(benches);
+
+/// The motivating workload for [`pesq::PesqContext`]: one 10 s
+/// reference scored against four degraded variants of itself. The
+/// direct path calls [`pesq::pesq`] four times; the context path
+/// prepares the reference once and scores the four variants.
+fn bench_pesq_context_4_variants(c: &mut Criterion) {
+    let reference = noise_bursts_16k(10, 21);
+    let variants: Vec<Vec<i16>> = (0..4)
+        .map(|i| noise_bursts_16k(10, 42 + i as u32))
+        .collect();
+    let mut group = c.benchmark_group("pesq_10s_4_variants");
+    group.bench_function("pesq_4_pairs", |b| {
+        b.iter(|| {
+            for variant in &variants {
+                pesq::pesq(black_box(&reference), black_box(variant)).unwrap();
+            }
+        })
+    });
+    group.bench_function("context_4_variants", |b| {
+        let context = pesq::PesqContext::new(&reference).unwrap();
+        b.iter(|| {
+            for variant in &variants {
+                context.score(black_box(variant)).unwrap();
+            }
+        })
+    });
+    group.finish();
+}

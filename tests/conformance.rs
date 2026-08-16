@@ -178,3 +178,53 @@ mod tests {
         assert_eq!(vectors[39].expected, 2.540);
     }
 }
+
+/// The preprocessed-reference API must reproduce the full pipeline bit
+/// for bit: each Annex A reference is prepared once and every degraded
+/// variant scored through the context, then compared to the `pesq_8k`
+/// score of the same pair.
+#[test]
+fn pesq_context_matches_pesq_8k_on_the_annex_a_vectors() {
+    let Some(dir) = std::env::var_os("PESQ_CONFORMANCE_DIR") else {
+        eprintln!(
+            "skip: PESQ_CONFORMANCE_DIR is not set; the Annex A WAV files are not \
+             shipped in this repository"
+        );
+        return;
+    };
+    let base = PathBuf::from(dir);
+    let markdown = std::fs::read_to_string(CONFORMANCE_MD)
+        .expect("spec/CONFORMANCE.md must be present in the repository");
+    let vectors = parse_vectors(&markdown);
+    let mut by_reference: std::collections::HashMap<&str, Vec<&Vector>> =
+        std::collections::HashMap::new();
+    for vector in &vectors {
+        by_reference
+            .entry(vector.reference.as_str())
+            .or_default()
+            .push(vector);
+    }
+    for (&reference, group) in &by_reference {
+        let reference_pcm = read_wav_pcm(&base.join(reference));
+        let context = pesq::PesqContext::new_8k(&reference_pcm)
+            .unwrap_or_else(|err| panic!("{reference}: context failed: {err}"));
+        for vector in group {
+            let degraded = read_wav_pcm(&base.join(&vector.degraded));
+            let expected = pesq::pesq_8k(&reference_pcm, &degraded)
+                .unwrap_or_else(|err| panic!("pair {}: pesq failed: {err}", vector.index));
+            let score = context
+                .score(&degraded)
+                .unwrap_or_else(|err| panic!("pair {}: context failed: {err}", vector.index));
+            assert_eq!(
+                score.to_bits(),
+                expected.to_bits(),
+                "pair {}: PesqContext score diverged from pesq_8k",
+                vector.index
+            );
+        }
+    }
+    eprintln!(
+        "context: {} references scored bit-identically to pesq_8k",
+        by_reference.len()
+    );
+}
