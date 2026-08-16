@@ -174,8 +174,9 @@ pub fn frame_disturbances(
 /// the L6 norm over the window with the denominator always 20 and frames
 /// beyond `frame_stop` contributing zero. The squared time-weighted
 /// syllables accumulate into the indicator `(S / T)^(1/2)` with the time
-/// weights of 4.7 taken at the window start. With an empty frame range
-/// both indicators are 0.
+/// weight of 4.7 taken at the window start, indexed relative to
+/// `frame_start` (spec 04, 4.8 step 1b). With an empty frame range both
+/// indicators are 0.
 pub fn aggregate(frames: &FrameDisturbances, frame_start: usize) -> DisturbanceIndicators {
     DisturbanceIndicators {
         symmetric: aggregate_indicator(&frames.symmetric, &frames.time_weights, frame_start),
@@ -197,7 +198,9 @@ fn aggregate_indicator(values: &[f32], weights: &[f32], frame_start: usize) -> f
             .map(|&value| f64::from(value).powi(6))
             .sum();
         let syllable = (power_sum / SYLLABLE_FRAMES as f64).powf(1.0 / SYLLABLE_EXPONENT);
-        let weight = f64::from(weights[window_start]);
+        // The weight index is the window start relative to frame_start,
+        // not the absolute frame index (spec 04, 4.8 step 1b).
+        let weight = f64::from(weights[window_start - frame_start]);
         sum += (weight * syllable).powi(2);
         weight_sum += weight * weight;
         window_start += SYLLABLE_STEP;

@@ -37,12 +37,10 @@ fn bark_table_covers_all_128_bins_and_42_bands() {
 
 #[test]
 fn bark_warping_of_a_flat_spectrum_scales_by_group_and_factor() {
-    // A flat spectrum warps to density[b] = power * n[b] * c[b] * Sp
-    // (spec 03, 3.3 steps 1 to 3).
-    let mut power = [0.0f64; NUM_POWER_BINS];
-    for bin in power.iter_mut().skip(1) {
-        *bin = 10_000.0;
-    }
+    // A flat spectrum over bins 0..=127 warps to
+    // density[b] = power * n[b] * c[b] * Sp (spec 03, 3.3 steps 1 to 3).
+    // The grouping consumes all 128 bins starting at bin 0.
+    let power = [10_000.0f64; NUM_POWER_BINS];
     let density = warp_to_bark(&power);
     for (band, row) in BARK_BANDS.iter().enumerate() {
         let expected = 10_000.0 * row.bins as f64 * f64::from(row.correction) * PITCH_POWER_SCALE;
@@ -54,16 +52,16 @@ fn bark_warping_of_a_flat_spectrum_scales_by_group_and_factor() {
 }
 
 #[test]
-fn bark_warping_ignores_the_forced_zero_dc_bin() {
+fn bark_warping_groups_from_bin_0() {
+    // Band 0 groups bin 0 only (spec 03, 3.3): the grouping starts at
+    // the DC bin. The caller zeroes bin 0 (spec 03, 3.2 step 3), so
+    // with every other bin silent only band 0 can carry density.
     let mut power = [0.0f64; NUM_POWER_BINS];
-    power[0] = 1e30;
-    for bin in power.iter_mut().skip(1) {
-        *bin = 1.0;
-    }
+    power[0] = 1000.0;
     let density = warp_to_bark(&power);
-    // Band 0 groups only bin 1, so a huge DC bin must not leak in.
-    let expected = 1.0 * f64::from(BARK_BANDS[0].correction) * PITCH_POWER_SCALE;
-    assert!((f64::from(density[0]) - expected).abs() < 1e-9);
+    let expected = 1000.0 * f64::from(BARK_BANDS[0].correction) * PITCH_POWER_SCALE;
+    assert!((f64::from(density[0]) - expected).abs() <= expected * 1e-6);
+    assert!(density[1..].iter().all(|&d| d == 0.0));
 }
 
 #[test]

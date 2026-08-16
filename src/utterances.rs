@@ -113,10 +113,10 @@ fn clamp_boundaries(utterances: &mut [UtteranceWork], degraded_nominal: usize) {
     let Some(first) = utterances.first_mut() else {
         return;
     };
-    // Step 3: left edge.
-    if (first.start as i64 - 75) * WINDOW_SAMPLES as i64 + i64::from(first.fine)
-        < MARGIN_SAMPLES as i64
-    {
+    // Step 3: left edge. The tested operand is start[0]*W, not
+    // (start[0] - 75)*W (spec 01, 1.12 step 3): step 2 has just set
+    // start[0] = 75, so the clamp triggers only when delay[0] < 0.
+    if first.start as i64 * WINDOW_SAMPLES as i64 + i64::from(first.fine) < MARGIN_SAMPLES as i64 {
         first.start =
             (75 + (WINDOW_SAMPLES as i32 - 1 - first.fine) / WINDOW_SAMPLES as i32) as usize;
     }
@@ -225,10 +225,12 @@ fn split_utterances(
 /// Frame skipping at negative delay jumps of spec 01 section 1.14.
 ///
 /// Returns one flag per frame index 0..=frame_stop. For every adjacent
-/// utterance pair whose delay jumps by less than -128 samples, frames f1
-/// through f2 inclusive are marked, where f1 uses a floor division and
-/// the bound j uses integer division truncating toward zero (1.14
-/// step 1).
+/// utterance pair whose delay jumps by less than -128 samples, frames
+/// strictly below frame_stop in the range [f1, min(f2, frame_stop - 1)]
+/// are marked. Both f1 and j divide with integer division truncating
+/// toward zero (1.14 step 1); the reference implementation's floor()
+/// around the integer quotient is a no-op. Frame_stop itself is never
+/// skipped (1.14 step 3).
 pub fn negative_delay_skip_flags(utterances: &[Utterance], frame_stop: usize) -> Vec<bool> {
     let mut flags = vec![false; frame_stop + 1];
     for pair in utterances.windows(2) {
@@ -236,7 +238,7 @@ pub fn negative_delay_skip_flags(utterances: &[Utterance], frame_stop: usize) ->
         let j1 = i64::from(pair[1].fine_delay);
         if j1 - j0 < -128 {
             let mut f1 =
-                ((pair[1].start_window as i64 - 75) * WINDOW_SAMPLES as i64 + j1).div_euclid(128);
+                ((pair[1].start_window as i64 - 75) * WINDOW_SAMPLES as i64 + j1) / 128;
             let j = ((pair[0].end_window as i64 - 75) * WINDOW_SAMPLES as i64 + j0) / 128;
             if f1 > j {
                 f1 = j;
@@ -248,7 +250,8 @@ pub fn negative_delay_skip_flags(utterances: &[Utterance], frame_stop: usize) ->
                 + (j1 - j0).abs().max(0))
                 / 128
                 + 1;
-            for frame in f1..=f2.min(frame_stop as i64) {
+            let last = f2.min(frame_stop as i64 - 1);
+            for frame in f1..=last {
                 flags[frame as usize] = true;
             }
         }

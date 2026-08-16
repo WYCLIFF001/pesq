@@ -151,8 +151,8 @@ fn skip_flags_mark_the_frame_range_of_a_negative_jump() {
         },
     ];
     let flags = negative_delay_skip_flags(&utterances, 40);
-    // f1 = floor((125 * 32 - 200) / 128) = 29, j = 2400 / 128 = 18,
-    // f1 > j so f1 = 18; f2 = (4200) / 128 + 1 = 33.
+    // f1 = trunc((125 * 32 - 200) / 128) = 29, j = trunc(2400 / 128) = 18,
+    // f1 > j so f1 = 18; f2 = trunc(4200 / 128) + 1 = 33.
     assert!(!flags[17]);
     assert!(flags[18]);
     assert!(flags[33]);
@@ -160,9 +160,37 @@ fn skip_flags_mark_the_frame_range_of_a_negative_jump() {
 }
 
 #[test]
+fn skip_flags_never_mark_frame_stop_itself() {
+    // 1.14 step 3 skips frames strictly below frame_stop: with the same
+    // jump as above and frame_stop = 33, frame 33 stays unflagged.
+    let utterances = vec![
+        Utterance {
+            start_window: 0,
+            end_window: 150,
+            coarse_delay: 0,
+            fine_delay: 0,
+            confidence: 0.0,
+            split_frame: None,
+        },
+        Utterance {
+            start_window: 200,
+            end_window: 400,
+            coarse_delay: -200,
+            fine_delay: -200,
+            confidence: 0.0,
+            split_frame: None,
+        },
+    ];
+    let flags = negative_delay_skip_flags(&utterances, 33);
+    assert!(flags[18]);
+    assert!(flags[32]);
+    assert!(!flags[33]);
+}
+
+#[test]
 fn skip_flags_use_truncating_division_for_the_upper_bound() {
     // end[0] = 50 lies below 75, so (end - 75) * 32 is negative and the
-    // truncating division of 1.14 step 1 differs from the floor of f1.
+    // truncating division of 1.14 step 1 differs from a floor.
     let utterances = vec![
         Utterance {
             start_window: 0,
@@ -182,8 +210,8 @@ fn skip_flags_use_truncating_division_for_the_upper_bound() {
         },
     ];
     let flags = negative_delay_skip_flags(&utterances, 40);
-    // f1 = floor(-736 / 128) = -6, j = trunc(-800 / 128) = -6, f1 < 0 so
-    // f1 = 0; f2 = trunc(-224 / 128) + 1 = 0.
+    // f1 = trunc(-736 / 128) = -5, j = trunc(-800 / 128) = -6, f1 > j so
+    // f1 = j = -6, then f1 < 0 so f1 = 0; f2 = trunc(-224 / 128) + 1 = 0.
     assert!(flags[0]);
     assert!(!flags[1]);
 }

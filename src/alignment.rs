@@ -89,7 +89,10 @@ pub fn fine_delay(
     }
 
     // Step 4: accumulate the weighted lag histogram over A-sample frames
-    // with a 75 percent overlap.
+    // with a 75 percent overlap. Step 4c takes the absolute values of
+    // the correlation; v is 0.99 times the maximum of those absolute
+    // values, and every lag whose absolute value exceeds v votes
+    // (step 4d).
     let mut frame_ref = vec![0.0f32; ALIGN_FFT_LEN];
     let mut frame_deg = vec![0.0f32; ALIGN_FFT_LEN];
     while deg_cursor + ALIGN_FFT_LEN as i64 <= degraded_nominal as i64
@@ -102,17 +105,21 @@ pub fn fine_delay(
             frame_deg[i] = window[i] * degraded[deg_start + i];
         }
         let spectrum = spectral_cross_correlate(&frame_ref, &frame_deg);
-        let peak = spectrum.iter().copied().fold(0.0f32, f32::max);
+        let peak = spectrum.iter().map(|value| value.abs()).fold(0.0f32, f32::max);
         let threshold = 0.99 * peak;
         let weight = threshold.powf(0.125);
         for (lag, &value) in spectrum.iter().enumerate() {
-            if value > threshold {
+            if value.abs() > threshold {
                 histogram[lag] += weight;
             }
         }
         ref_cursor += FINE_ADVANCE as i64;
         deg_cursor += FINE_ADVANCE as i64;
     }
+
+    // Step 6 before step 5: the normalization divisor Hsum is the sum of
+    // the raw histogram, captured before the smoothing of step 5.
+    let raw_sum: f64 = histogram.iter().map(|&h| f64::from(h)).sum();
 
     // Step 5: circular smoothing with the triangular kernel of radius
     // K = 8: kernel[0] = 1 and kernel[k] = kernel[A - k] = 1 - k/8 for
@@ -126,12 +133,11 @@ pub fn fine_delay(
     }
     histogram = circular_convolve(&histogram, &kernel);
 
-    // Step 6: normalize by the raw histogram sum.
-    let sum: f64 = histogram.iter().map(|&h| f64::from(h)).sum();
-    if sum > 0.0 {
-        let sum = sum as f32;
+    // Step 6: divide the smoothed histogram by the raw sum.
+    if raw_sum > 0.0 {
+        let raw_sum = raw_sum as f32;
         for h in histogram.iter_mut() {
-            *h = (*h / sum).abs();
+            *h = (*h / raw_sum).abs();
         }
     } else {
         histogram.fill(0.0);
@@ -371,5 +377,16 @@ mod tests {
     fn search_windows_reject_short_runs() {
         let vad = vad_with_burst(400, 100, 49);
         assert!(search_windows(&vad, 0, 400 * WINDOW_SAMPLES).is_empty());
+    }
+
+    #[test]
+    fn coarse_maximizer_falls_back_to_zero_lag() {
+        // Spec 01 section 1.9 step 4: the maximizer starts with value 0
+        // at index Vr - 1, so with no positive correlation value the
+        // fallback is k = Vr - 1, i.e. lag 0 (not +W).
+        let negative = [-1.0f32, -2.0, -3.0];
+        assert_eq!(lag_from_correlation(&negative, 4), 0);
+        let zeros = [0.0f32; 9];
+        assert_eq!(lag_from_correlation(&zeros, 4), 0);
     }
 }

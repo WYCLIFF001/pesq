@@ -9,14 +9,14 @@
 //! The example runs the pipeline through the perceptual model (spec 03)
 //! and prints one line per conformance pair with the intermediate
 //! quantities the conformance pass needs: the coarse delay, the
-//! utterance count and the
-//! per-utterance fine delays with confidences, the negative-delay skip
-//! frame count (spec 01, 1.14), the frame range (spec 03, 3.1), the
-//! silent frame count, and the mean per-frame energy of the reference and
-//! degraded pitch and loudness densities.
+//! utterance count, the per-utterance boundaries with coarse and fine
+//! delays and confidences, the negative-delay skip frame count
+//! (spec 01, 1.14), the frame range (spec 03, 3.1), the silent frame
+//! count, and the mean per-frame energy of the reference and degraded
+//! pitch and loudness densities.
 //!
-//! The 8 kHz WAV files are upsampled to 16 kHz exactly as the conformance
-//! harness does, so this measures the same code path as `pesq::pesq`.
+//! The 8 kHz WAV files feed the pipeline directly through the 8 kHz
+//! entry point, the same code path as the conformance harness.
 
 use std::path::{Path, PathBuf};
 
@@ -61,14 +61,14 @@ fn main() {
 
 /// Run the pipeline for one pair and print the stage observations.
 fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
-    use pesq::input::prepare_input;
     use pesq::input::process_pair;
     use pesq::psychoacoustic;
     use pesq::types::PesqError;
+    use pesq::types::SignalBuffer;
     use pesq::utterances::negative_delay_skip_flags;
 
-    let reference = prepare_input(&upsample_8k_to_16k(reference_8k));
-    let degraded = prepare_input(&upsample_8k_to_16k(degraded_8k));
+    let reference = SignalBuffer::from_pcm(reference_8k);
+    let degraded = SignalBuffer::from_pcm(degraded_8k);
     let (reference, degraded) = match (reference, degraded) {
         (Ok(r), Ok(d)) => (r, d),
         (Err(err), _) | (_, Err(err)) => {
@@ -135,7 +135,12 @@ fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
     let delays: Vec<String> = pair
         .utterances
         .iter()
-        .map(|u| format!("{}({:.3})", u.fine_delay, u.confidence))
+        .map(|u| {
+            format!(
+                "{}..={}/{}:{}:{:.3}",
+                u.start_window, u.end_window, u.coarse_delay, u.fine_delay, u.confidence
+            )
+        })
         .collect();
     println!(
         "pair {index:2}: {n_max:6} {coarse:6} {utt:3} [{delays:60}] {skip:4} \
@@ -177,16 +182,4 @@ fn read_wav_pcm(path: &Path) -> Vec<i16> {
         .chunks_exact(2)
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect()
-}
-
-/// Upsample 8 kHz PCM to 16 kHz by linear interpolation, matching the
-/// conformance harness.
-fn upsample_8k_to_16k(samples: &[i16]) -> Vec<i16> {
-    let mut upsampled = Vec::with_capacity(samples.len().saturating_mul(2));
-    for (i, &sample) in samples.iter().enumerate() {
-        upsampled.push(sample);
-        let next = samples.get(i + 1).copied().unwrap_or(sample);
-        upsampled.push(((i32::from(sample) + i32::from(next)) / 2) as i16);
-    }
-    upsampled
 }

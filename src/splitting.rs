@@ -7,7 +7,7 @@
 //! utterance list.
 
 use crate::alignment::coarse_delay_search;
-use crate::dsp::{circular_convolve, hann_window, spectral_cross_correlate};
+use crate::dsp::{hann_window, spectral_cross_correlate};
 use crate::types::{ALIGN_FFT_LEN, SignalBuffer, VadData, WINDOW_SAMPLES};
 use crate::utterances::UtteranceWork;
 
@@ -20,9 +20,6 @@ const SPLIT_GRID_STEP: usize = 4;
 
 /// Maximum number of split candidates (spec 01, 1.13 step 3).
 const SPLIT_MAX_CANDIDATES: usize = 40;
-
-/// Histogram smoothing radius K = A/64 (spec 01, 1.10 step 5).
-const SMOOTH_RADIUS: usize = ALIGN_FFT_LEN / 64;
 
 /// A split accepted by the rules of spec 01 section 1.13 step 8.
 pub(crate) struct Split {
@@ -92,67 +89,83 @@ pub(crate) fn best_split(
         .map(|&c| coarse_delay_search(ref_vad, deg_vad, c, end, coarse))
         .collect();
 
-    // Step 5: the forward fine pass, extended over candidates sharing
-    // the same left estimate.
+    // Step 5: the forward fine pass. Each pass starts fresh at the
+    // first candidate whose forward confidence is not yet computed and
+    // drives one accumulation from the utterance start through every
+    // later breakpoint in order; when the accumulation reaches a
+    // candidate's breakpoint, that candidate's own forward delay and
+    // confidence are recorded from the histogram accumulated so far.
+    // Candidates with a different left estimate are left uncomputed and
+    // the cursors keep advancing past them, so the values recorded
+    // within one pass can differ between candidates (1.13 step 5).
     let count = candidates.len();
     let mut forward_delay = vec![0i32; count];
     let mut forward_confidence = vec![0.0f32; count];
+    let mut computed = vec![false; count];
     let mut i = 0;
     while i < count {
         let seed = left_estimates[i];
+        let mut pass = SplitAccumulator::new(reference, degraded, start, seed, false);
         let mut j = i;
-        while j + 1 < count && left_estimates[j + 1] == seed {
+        while j < count {
+            pass.advance_to(candidates[j] as i64 * WINDOW_SAMPLES as i64);
+            if left_estimates[j] == seed {
+                let (delay, confidence) = pass.record(seed);
+                forward_delay[j] = delay;
+                forward_confidence[j] = confidence;
+                computed[j] = true;
+            }
             j += 1;
         }
-        let (delay, confidence) = directional_pass(
-            reference,
-            degraded,
-            start,
-            candidates[j],
-            seed,
-            degraded.nominal_len,
-            false,
-        );
-        for estimate in forward_delay.iter_mut().take(j + 1).skip(i) {
-            *estimate = delay;
+        while i < count && computed[i] {
+            i += 1;
         }
-        for conf in forward_confidence.iter_mut().take(j + 1).skip(i) {
-            *conf = confidence;
-        }
-        i = j + 1;
     }
 
-    // Step 7: the backward fine pass for eligible candidates, extended
-    // over candidates sharing the same right estimate.
+    // Step 7: the backward fine pass. Each pass starts at the last
+    // candidate whose backward confidence is uncomputed and whose
+    // forward confidence exceeds the utterance confidence, and drives
+    // one accumulation from the utterance end downward through every
+    // earlier breakpoint, recording per candidate exactly as in step 5.
+    // Candidates whose forward confidence did not exceed the utterance
+    // confidence keep backward confidence 0 (1.13 step 7).
     let mut backward_delay = vec![0i32; count];
     let mut backward_confidence = vec![0.0f32; count];
-    let mut idx = count;
-    while idx > 0 {
-        idx -= 1;
-        if forward_confidence[idx] <= utterance_confidence {
-            continue;
+    let mut computed = vec![false; count];
+    let mut index = count;
+    loop {
+        let mut start_index = index;
+        let mut found = None;
+        while start_index > 0 {
+            start_index -= 1;
+            if !computed[start_index] && forward_confidence[start_index] > utterance_confidence {
+                found = Some(start_index);
+                break;
+            }
         }
-        let seed = right_estimates[idx];
-        let mut j = idx;
-        while j > 0 && right_estimates[j - 1] == seed {
-            j -= 1;
+        let Some(start_index) = found else {
+            break;
+        };
+        let seed = right_estimates[start_index];
+        let mut pass = SplitAccumulator::new(reference, degraded, end, seed, true);
+        let mut k = start_index;
+        loop {
+            pass.advance_to(candidates[k] as i64 * WINDOW_SAMPLES as i64);
+            if right_estimates[k] == seed
+                && !computed[k]
+                && forward_confidence[k] > utterance_confidence
+            {
+                let (delay, confidence) = pass.record(seed);
+                backward_delay[k] = delay;
+                backward_confidence[k] = confidence;
+                computed[k] = true;
+            }
+            if k == 0 {
+                break;
+            }
+            k -= 1;
         }
-        let (delay, confidence) = directional_pass(
-            reference,
-            degraded,
-            end,
-            candidates[j],
-            seed,
-            degraded.nominal_len,
-            true,
-        );
-        for estimate in backward_delay.iter_mut().take(idx + 1).skip(j) {
-            *estimate = delay;
-        }
-        for conf in backward_confidence.iter_mut().take(idx + 1).skip(j) {
-            *conf = confidence;
-        }
-        idx = j;
+        index = start_index;
     }
 
     // Step 8: the best split by scan order with strict improvement of
@@ -184,104 +197,158 @@ pub(crate) fn best_split(
     })
 }
 
-/// One fine-pass histogram with peak spreading (spec 01, 1.13 steps 5
-/// to 7). The forward pass scans from `boundary` toward `candidate`; the
-/// backward pass scans from `boundary` back to `candidate`.
-fn directional_pass(
-    reference: &SignalBuffer,
-    degraded: &SignalBuffer,
-    boundary: usize,
-    candidate: usize,
-    seed: i32,
-    degraded_nominal: usize,
-    backward: bool,
-) -> (i32, f32) {
-    let window = hann_window(ALIGN_FFT_LEN);
-    let mut histogram = vec![0.0f32; ALIGN_FFT_LEN];
-    let mut hsum = 0.0f64;
-    let mut frame_ref = vec![0.0f32; ALIGN_FFT_LEN];
-    let mut frame_deg = vec![0.0f32; ALIGN_FFT_LEN];
+/// One incremental fine-pass accumulation with peak spreading (spec 01,
+/// 1.13 steps 5 to 7). The cursors advance toward successive candidate
+/// breakpoints; recording a candidate reads the histogram accumulated
+/// so far, so values recorded at different breakpoints of one pass can
+/// differ. One pass serves every candidate that shares its seed.
 
-    let mut ref_cursor: i64 = if backward {
-        boundary as i64 * WINDOW_SAMPLES as i64 - ALIGN_FFT_LEN as i64
-    } else {
-        boundary as i64 * WINDOW_SAMPLES as i64
-    };
-    let mut deg_cursor = ref_cursor + i64::from(seed);
-    if deg_cursor < 0 {
-        ref_cursor = i64::from(-seed);
-        deg_cursor = 0;
-    }
-    if backward && deg_cursor + ALIGN_FFT_LEN as i64 > degraded_nominal as i64 {
-        deg_cursor = degraded_nominal as i64 - ALIGN_FFT_LEN as i64;
-        ref_cursor = deg_cursor - i64::from(seed);
-    }
-    let candidate_samples = candidate as i64 * WINDOW_SAMPLES as i64;
-    loop {
-        let in_range = if backward {
-            deg_cursor >= 0 && ref_cursor >= candidate_samples
+/// The running state of one accumulation: the two cursors, the raw
+/// histogram and its running sum, and the per-frame scratch buffers.
+struct SplitAccumulator<'a> {
+    reference: &'a [f32],
+    degraded: &'a [f32],
+    degraded_nominal: usize,
+    ref_cursor: i64,
+    deg_cursor: i64,
+    backward: bool,
+    window: Vec<f32>,
+    histogram: Vec<f32>,
+    hsum: f64,
+    frame_ref: Vec<f32>,
+    frame_deg: Vec<f32>,
+}
+
+impl<'a> SplitAccumulator<'a> {
+    /// A fresh accumulation starting at `boundary` (the utterance start
+    /// for a forward pass, the utterance end for a backward pass) with
+    /// the initial delay `seed`.
+    ///
+    /// Forward (step 5): the reference cursor starts at `boundary * W`
+    /// and the negative-degraded-cursor clamp of 1.10 step 3 applies as
+    /// a replacement of the reference cursor. Backward (step 7): the
+    /// reference cursor starts at `boundary * W - A`; when the degraded
+    /// cursor plus A runs past the nominal length, the degraded cursor
+    /// moves to `N_deg - A` and the reference cursor to that minus the
+    /// seed. The backward pass has no clamp for a negative degraded
+    /// cursor: the loop condition ends the accumulation with an empty
+    /// histogram, giving confidence 0.
+    fn new(
+        reference: &'a SignalBuffer,
+        degraded: &'a SignalBuffer,
+        boundary: usize,
+        seed: i32,
+        backward: bool,
+    ) -> Self {
+        let mut ref_cursor = if backward {
+            boundary as i64 * WINDOW_SAMPLES as i64 - ALIGN_FFT_LEN as i64
         } else {
-            deg_cursor + ALIGN_FFT_LEN as i64 <= degraded_nominal as i64
-                && ref_cursor + ALIGN_FFT_LEN as i64 <= candidate_samples
+            boundary as i64 * WINDOW_SAMPLES as i64
         };
-        if !in_range {
-            break;
+        let mut deg_cursor = ref_cursor + i64::from(seed);
+        if backward {
+            if deg_cursor + ALIGN_FFT_LEN as i64 > degraded.nominal_len as i64 {
+                deg_cursor = degraded.nominal_len as i64 - ALIGN_FFT_LEN as i64;
+                ref_cursor = deg_cursor - i64::from(seed);
+            }
+        } else if deg_cursor < 0 {
+            ref_cursor = i64::from(-seed);
+            deg_cursor = 0;
         }
-        let ref_start = ref_cursor as usize;
-        let deg_start = deg_cursor as usize;
-        for i in 0..ALIGN_FFT_LEN {
-            frame_ref[i] = window[i] * reference.samples[ref_start + i];
-            frame_deg[i] = window[i] * degraded.samples[deg_start + i];
+        Self {
+            reference: &reference.samples,
+            degraded: &degraded.samples,
+            degraded_nominal: degraded.nominal_len,
+            ref_cursor,
+            deg_cursor,
+            backward,
+            window: hann_window(ALIGN_FFT_LEN),
+            histogram: vec![0.0f32; ALIGN_FFT_LEN],
+            hsum: 0.0,
+            frame_ref: vec![0.0f32; ALIGN_FFT_LEN],
+            frame_deg: vec![0.0f32; ALIGN_FFT_LEN],
         }
-        let spectrum = spectral_cross_correlate(&frame_ref, &frame_deg);
-        let peak = spectrum.iter().copied().fold(0.0f32, f32::max);
-        let v = 0.99 * peak;
-        let unit = v.powf(0.125) / 8.0;
-        for (lag, &value) in spectrum.iter().enumerate() {
-            if value > v {
-                for k in -7..=7i32 {
-                    let index = (lag as i32 + k).rem_euclid(ALIGN_FFT_LEN as i32) as usize;
-                    histogram[index] += unit * (8 - k.unsigned_abs()) as f32;
+    }
+}
+
+impl SplitAccumulator<'_> {
+    /// Advance the accumulation until the reference cursor passes the
+    /// breakpoint sample `candidate_samples`. Forward frames accumulate
+    /// while the cursors plus A stay within the degraded nominal length
+    /// and at most the breakpoint; backward frames accumulate while the
+    /// degraded cursor is non-negative and the reference cursor stays at
+    /// least the breakpoint. Both cursors step by A/4 per frame, and
+    /// each frame spreads its peaks per 1.13 step 6.
+    fn advance_to(&mut self, candidate_samples: i64) {
+        loop {
+            let in_range = if self.backward {
+                self.deg_cursor >= 0 && self.ref_cursor >= candidate_samples
+            } else {
+                self.deg_cursor + ALIGN_FFT_LEN as i64 <= self.degraded_nominal as i64
+                    && self.ref_cursor + ALIGN_FFT_LEN as i64 <= candidate_samples
+            };
+            if !in_range {
+                return;
+            }
+            let ref_start = self.ref_cursor as usize;
+            let deg_start = self.deg_cursor as usize;
+            for i in 0..ALIGN_FFT_LEN {
+                self.frame_ref[i] = self.window[i] * self.reference[ref_start + i];
+                self.frame_deg[i] = self.window[i] * self.degraded[deg_start + i];
+            }
+            let spectrum = spectral_cross_correlate(&self.frame_ref, &self.frame_deg);
+            // The correlation values are absolute (1.10 step 4c); v is
+            // 0.99 times the maximum of the absolute values and the
+            // spread covers every lag whose absolute value exceeds v.
+            // The Hsum increment applies once per exceeding lag, so the
+            // recorded confidence peak/Hsum stays at most 1.
+            let peak = spectrum.iter().map(|value| value.abs()).fold(0.0f32, f32::max);
+            let v = 0.99 * peak;
+            let unit = v.powf(0.125) / 8.0;
+            for (lag, &value) in spectrum.iter().enumerate() {
+                if value.abs() > v {
+                    for k in -7..=7i32 {
+                        let index = (lag as i32 + k).rem_euclid(ALIGN_FFT_LEN as i32) as usize;
+                        self.histogram[index] += unit * (8 - k.unsigned_abs()) as f32;
+                    }
+                    self.hsum += f64::from(v.powf(0.125));
                 }
             }
-        }
-        hsum += f64::from(v.powf(0.125));
-        if backward {
-            ref_cursor -= ALIGN_FFT_LEN as i64 / 4;
-            deg_cursor -= ALIGN_FFT_LEN as i64 / 4;
-        } else {
-            ref_cursor += ALIGN_FFT_LEN as i64 / 4;
-            deg_cursor += ALIGN_FFT_LEN as i64 / 4;
+            let step = ALIGN_FFT_LEN as i64 / 4;
+            if self.backward {
+                self.ref_cursor -= step;
+                self.deg_cursor -= step;
+            } else {
+                self.ref_cursor += step;
+                self.deg_cursor += step;
+            }
         }
     }
 
-    // Smoothing of 1.10 step 5, then the folded peak; the confidence is
-    // peak / Hsum (0 with a non-positive Hsum).
-    let mut kernel = vec![0.0f32; ALIGN_FFT_LEN];
-    kernel[0] = 1.0;
-    for k in 1..=SMOOTH_RADIUS - 1 {
-        let value = 1.0 - k as f32 / SMOOTH_RADIUS as f32;
-        kernel[k] = value;
-        kernel[ALIGN_FFT_LEN - k] = value;
-    }
-    histogram = circular_convolve(&histogram, &kernel);
-    let mut peak_index = 0usize;
-    let mut peak_value = 0.0f32;
-    for (lag, &value) in histogram.iter().enumerate() {
-        if value > peak_value {
-            peak_value = value;
-            peak_index = lag;
+    /// Record the delay and confidence at the current position: the
+    /// seed plus the folded peak of the raw histogram (the spread of
+    /// step 6 provides the smoothing; first position wins ties by scan
+    /// order), and the peak divided by the Hsum accumulated per
+    /// exceeding lag (0 with a non-positive Hsum).
+    fn record(&mut self, seed: i32) -> (i32, f32) {
+        let mut peak_index = 0usize;
+        let mut peak_value = 0.0f32;
+        for (lag, &value) in self.histogram.iter().enumerate() {
+            if value > peak_value {
+                peak_value = value;
+                peak_index = lag;
+            }
         }
+        let folded = if peak_index >= ALIGN_FFT_LEN / 2 {
+            peak_index as i32 - ALIGN_FFT_LEN as i32
+        } else {
+            peak_index as i32
+        };
+        let confidence = if self.hsum > 0.0 {
+            f64::from(peak_value) / self.hsum
+        } else {
+            0.0
+        } as f32;
+        (seed + folded, confidence)
     }
-    let folded = if peak_index >= ALIGN_FFT_LEN / 2 {
-        peak_index as i32 - ALIGN_FFT_LEN as i32
-    } else {
-        peak_index as i32
-    };
-    let confidence = if hsum > 0.0 {
-        f64::from(peak_value) / hsum
-    } else {
-        0.0
-    } as f32;
-    (seed + folded, confidence)
 }

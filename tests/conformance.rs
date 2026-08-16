@@ -17,8 +17,9 @@
 //! 0.5. Scores are compared rounded to 3 decimal places (CONFORMANCE.md
 //! section 6).
 //!
-//! The 8 kHz WAV files are upsampled to the 16 kHz rate the public API
-//! accepts; [`pesq::pesq`] decimates back to 8 kHz internally.
+//! The harness feeds the original 8 kHz WAV samples to the 8 kHz entry
+//! point [`pesq::pesq_8k`] (CONFORMANCE.md section 6 item 4); no rate
+//! conversion is applied on either side.
 
 use std::path::{Path, PathBuf};
 
@@ -101,18 +102,6 @@ fn read_wav_pcm(path: &Path) -> Vec<i16> {
         .collect()
 }
 
-/// Upsample 8 kHz PCM to the 16 kHz rate the public API accepts, by
-/// linear interpolation between neighbouring samples.
-fn upsample_8k_to_16k(samples: &[i16]) -> Vec<i16> {
-    let mut upsampled = Vec::with_capacity(samples.len().saturating_mul(2));
-    for (i, &sample) in samples.iter().enumerate() {
-        upsampled.push(sample);
-        let next = samples.get(i + 1).copied().unwrap_or(sample);
-        upsampled.push(((i32::from(sample) + i32::from(next)) / 2) as i16);
-    }
-    upsampled
-}
-
 #[test]
 fn annex_a_8khz_voip_conformance() {
     let Some(dir) = std::env::var_os("PESQ_CONFORMANCE_DIR") else {
@@ -140,9 +129,7 @@ fn annex_a_8khz_voip_conformance() {
     for vector in &vectors {
         let reference = read_wav_pcm(&base.join(&vector.reference));
         let degraded = read_wav_pcm(&base.join(&vector.degraded));
-        let reference_16k = upsample_8k_to_16k(&reference);
-        let degraded_16k = upsample_8k_to_16k(&degraded);
-        let score = pesq::pesq(&reference_16k, &degraded_16k)
+        let score = pesq::pesq_8k(&reference, &degraded)
             .unwrap_or_else(|err| panic!("pair {}: pesq failed: {err}", vector.index));
         let rounded = (score * 1000.0).round() / 1000.0;
         let delta = (rounded - vector.expected).abs();
@@ -189,10 +176,5 @@ mod tests {
         assert_eq!(vectors[39].reference, "voip/u_am1s03.wav");
         assert_eq!(vectors[39].degraded, "voip/u_am1s03b2c18.wav");
         assert_eq!(vectors[39].expected, 2.540);
-    }
-
-    #[test]
-    fn upsample_interleaves_interpolated_samples() {
-        assert_eq!(upsample_8k_to_16k(&[0, 10, 20]), [0, 5, 10, 15, 20, 20]);
     }
 }

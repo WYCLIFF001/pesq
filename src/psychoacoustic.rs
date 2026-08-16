@@ -26,10 +26,11 @@ pub const FRAME_HOP: usize = 128;
 pub const NUM_BANDS: usize = 42;
 
 /// Number of power spectrum bins the band grouping of spec 03 section
-/// 3.3 consumes: bins 1..=128. Section 3.2 lists bins 0..127, but the
-/// group counts of Table 1 sum to 128 starting at bin 1, so the array
-/// holds 129 entries (bins 0..=128, including the Nyquist bin).
-const NUM_POWER_BINS: usize = 129;
+/// 3.3 consumes: bins 0..=127. The grouping starts at bin 0 (the
+/// already-zeroed DC bin) and the group counts of Table 1 sum to 128.
+/// The Nyquist bin (bin 128) is not produced by section 3.2 and is not
+/// part of the grouping.
+const NUM_POWER_BINS: usize = 128;
 
 /// Absolute-sum threshold of the 5-sample silence skip probes
 /// (spec 03, 3.1 steps 1 and 2).
@@ -91,8 +92,8 @@ impl Spectra {
     /// Power spectrum of the frame starting at sample `start`: window
     /// with the Hann window, forward FFT, `real^2 + imag^2` per bin, and
     /// bin 0 forced to zero (spec 03, 3.2 steps 1 to 3). The output
-    /// covers bins 0..=128 so the band grouping of 3.3 can consume 128
-    /// bins starting at bin 1.
+    /// covers bins 0..=127; the band grouping of 3.3 consumes all 128
+    /// bins starting at bin 0.
     fn power(&mut self, samples: &[f32], start: usize, out: &mut [f64; NUM_POWER_BINS]) {
         self.scratch.clear();
         self.scratch.extend(
@@ -188,14 +189,14 @@ fn degraded_start(r0: usize, n_max: usize, utterances: &[Utterance]) -> Option<u
     Some(d0 as usize)
 }
 
-/// Warp a 129-bin power spectrum into the 42 Bark bands (spec 03,
-/// section 3.3): band b sums the next n[b] bins starting at bin 1 (bin 0
-/// is already zero), then multiplies by the correction factor c[b] and
-/// by Sp. The sums accumulate in f64 and the result is stored as f32
-/// (spec 01, 1.1).
+/// Warp a 128-bin power spectrum into the 42 Bark bands (spec 03,
+/// section 3.3): band b sums the next n[b] bins starting at bin 0 (the
+/// already-zeroed DC bin), consuming bins 0..=127, then multiplies by
+/// the correction factor c[b] and by Sp. The sums accumulate in f64 and
+/// the result is stored as f32 (spec 01, 1.1).
 pub fn warp_to_bark(power: &[f64; NUM_POWER_BINS]) -> [f32; NUM_BANDS] {
     let mut density = [0.0f32; NUM_BANDS];
-    let mut bin = 1;
+    let mut bin = 0;
     for (band, row) in table::BARK_BANDS.iter().enumerate() {
         let sum: f64 = power[bin..bin + row.bins].iter().sum();
         bin += row.bins;

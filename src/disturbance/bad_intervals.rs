@@ -13,8 +13,10 @@ use super::{
     MIN_CORRELATION,
 };
 
-/// Number of power bins a 256-point spectrum produces (spec 03, 3.2).
-const POWER_BINS: usize = FRAME_LEN / 2 + 1;
+/// Number of power bins the band grouping consumes: bins 0..=127 of the
+/// 256-point spectrum (spec 03, 3.2 and 3.3). The Nyquist bin is not
+/// grouped.
+const POWER_BINS: usize = FRAME_LEN / 2;
 
 /// Run the bad-interval machinery of spec 04 section 4.5 on the
 /// pre-normalization frame disturbances. Detects the bad intervals of

@@ -10,20 +10,20 @@
 //!
 //! # Public API
 //!
-//! Input: two slices of mono 16-bit linear PCM at 16 kHz, one for the
-//! reference signal and one for the degraded signal. Output: the raw
-//! P.862 score (about -0.5 to 4.5, spec 05 section 5.1) or a
-//! [`PesqError`].
+//! Input: two slices of mono 16-bit linear PCM, one for the reference
+//! signal and one for the degraded signal. [`pesq`] accepts 16 kHz
+//! input and decimates to the native 8 kHz model rate (spec 01,
+//! table 1.1); [`pesq_8k`] accepts 8 kHz input directly and is the
+//! entry point for the conformance data of CONFORMANCE.md, which the
+//! reference model scores at 8 kHz. Output: the raw P.862 score (about
+//! -0.5 to 4.5, spec 05 section 5.1) or a [`PesqError`].
 //!
 //! ```ignore
-//! let score = pesq::pesq(&reference_pcm, &degraded_pcm)?;
+//! let score = pesq::pesq_8k(&reference_pcm, &degraded_pcm)?;
 //! println!("raw PESQ score: {score:.3}");
 //! println!("MOS-LQO: {:.3}", pesq::score::mos_lqo(f64::from(score)));
 //! # Ok::<(), pesq::PesqError>(())
 //! ```
-//!
-//! The model itself runs at 8 kHz (spec 01, table 1.1); the 16 kHz input
-//! is decimated in [`input`].
 //!
 //! # Module map
 //!
@@ -53,15 +53,18 @@ pub mod vad;
 
 pub use types::PesqError;
 
-/// Score a reference/degraded pair (narrowband P.862).
+/// Score a reference/degraded pair (narrowband P.862) at 16 kHz.
 ///
-/// Both inputs are mono 16-bit linear PCM at 16 kHz. The model downsamples
-/// to its native 8 kHz rate and follows the processing order of spec 01
-/// section 1.15: input handling and alignment (1.2 to 1.13), length
-/// equalization (1.7), the perceptual model (spec 03), the disturbance
-/// computation (spec 04), and the scoring (spec 05). The returned value
-/// is the raw P.862 score, unclipped (spec 05, 5.1); map it to MOS-LQO
-/// with [`score::mos_lqo`].
+/// Both inputs are mono 16-bit linear PCM at 16 kHz. The model decimates
+/// to its native 8 kHz rate (spec 01, table 1.1) and follows the
+/// processing order of spec 01 section 1.15: input handling and
+/// alignment (1.2 to 1.13), length equalization (1.7), the perceptual
+/// model (spec 03), the disturbance computation (spec 04), and the
+/// scoring (spec 05). The specification prescribes no decimation filter;
+/// the provisional pair averaging of [`input::prepare_input`] attenuates
+/// the highest octave. Use [`pesq_8k`] to score 8 kHz PCM directly. The
+/// returned value is the raw P.862 score, unclipped (spec 05, 5.1); map
+/// it to MOS-LQO with [`score::mos_lqo`].
 ///
 /// # Errors
 ///
@@ -71,13 +74,33 @@ pub use types::PesqError;
 ///   (spec 01, 1.11 step 5).
 pub fn pesq(ref_wav: &[i16], deg_wav: &[i16]) -> Result<f32, PesqError> {
     // spec 01, 1.2: input format and the margin-layout buffers, with the
-    // 16 kHz to 8 kHz decimation of the public API.
+    // 16 kHz to 8 kHz decimation of this entry point.
     let reference = input::prepare_input(ref_wav)?;
     let degraded = input::prepare_input(deg_wav)?;
+    score_pair(reference, degraded)
+}
 
-    // spec 01, 1.3 to 1.13: level normalization, IRS receive filtering,
-    // DC removal, the input IIR filter, VAD, alignment, and the saved
-    // model copies equalized to Nmax + P samples (1.7).
+/// Score a reference/degraded pair (narrowband P.862) at 8 kHz.
+///
+/// Both inputs are mono 16-bit linear PCM at 8 kHz, the native model
+/// rate (spec 01, table 1.1). The samples feed the pipeline without any
+/// rate conversion, exactly as the reference model scores the
+/// conformance data of CONFORMANCE.md section 6. Otherwise identical to
+/// [`pesq`], including the error conditions.
+pub fn pesq_8k(ref_wav: &[i16], deg_wav: &[i16]) -> Result<f32, PesqError> {
+    // spec 01, 1.2: input format and the margin-layout buffers.
+    let reference = types::SignalBuffer::from_pcm(ref_wav)?;
+    let degraded = types::SignalBuffer::from_pcm(deg_wav)?;
+    score_pair(reference, degraded)
+}
+
+/// The shared pipeline of [`pesq`] and [`pesq_8k`] on 8 kHz signal
+/// buffers: spec 01, 1.3 to 1.13 (level normalization, IRS receive
+/// filtering, DC removal, the input IIR filter, VAD, alignment, and the
+/// saved model copies equalized to Nmax + P samples per 1.7), then the
+/// perceptual model of spec 03, the disturbance computation of spec 04,
+/// and the scoring of spec 05.
+fn score_pair(reference: types::SignalBuffer, degraded: types::SignalBuffer) -> Result<f32, PesqError> {
     let pair = input::process_pair(reference, degraded)?;
 
     // spec 03: perceptual model over the saved copies with the
