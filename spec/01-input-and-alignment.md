@@ -85,7 +85,7 @@ Input: the working buffer of length N + P (after 1.5 and 1.6). The analysis uses
 1. Window energy: for each window v, e[v] = mean of squares of its W samples.
 2. Initial threshold t = mean of e over all windows.
 3. Noise floor m = maximum of e over all windows; if m > 0 then m = m * 1e-4, else m = 1. Then floor every window: e[v] = max(e[v], m).
-4. Iterate 12 times: let Q be the set of windows with e[v] <= t. If Q is non-empty: noise mean = mean of e over Q; noise std = standard deviation of e over Q (population std, square root of mean squared deviation); t = 1.001 * (noise mean + 2 * noise std).
+4. Iterate 12 times: let Q be the set of windows with e[v] <= t. Compute the noise mean as the mean of e over Q and the noise std as the population standard deviation of e over Q (square root of the mean squared deviation), accumulating both sums from 0, so an empty Q would give 0 for both. Then update t = 1.001 * (noise mean + 2 * noise std) unconditionally, on every iteration; with an empty Q, t would become 0. The empty case is unreachable: the floor of step 3 makes every window value at least m, and the minimum window is always in Q, because t starts at the mean of all windows (at least the minimum) and every update produces t = 1.001 * (noise mean + 2 * noise std), which is at least 1.001 times the minimum, as the minimum window lies in Q and the noise std is never negative.
 5. After the iterations: signal level = mean of e over windows with e[v] > t, or, if there are none, set t = -1. Noise level = mean of e over the remaining windows, or 1 if none remain.
 6. Sign encoding: negate e[v] for every window with e[v] <= t. (Positive = speech, negative = noise.)
 7. Force e[0] = -m and e[V-1] = -m.
@@ -129,11 +129,11 @@ Input: the working buffers, an utterance search start window s0, search end wind
 
 ## 1.11 Utterance search windows
 
-Using the reference log-VAD (1.8 step 14) and the coarse delay from 1.9:
+Using the reference processed energy array (the e array of 1.8, as left by step 13; step 14 only derives the log-domain array l from it) and the coarse delay from 1.9:
 
 1. Degradation bounds: b1 = 50 - (coarse delay / W) and b2 = (N_deg - coarse delay)/W - 50 (integer division).
-2. Scan the reference VAD windows in order, tracking runs of windows with l[v] > 0.
-3. A run from window a to window c (c exclusive) qualifies as an utterance if (c - a) >= 50, a < b2, and c > b1.
+2. Scan the reference windows in order, tracking runs of speech windows. Speech is defined by e[v] > 0 on the processed energy array, not by the log-domain VAD l[v]: a window with 0 < e[v] <= t has l[v] = 0 (it contributes nothing to the correlation of 1.9) but still counts as speech here and never ends a run. A window with e[v] == 0 is non-speech; negative values no longer exist after 1.8 step 13.
+3. Run end: a run ends when the scan finds a non-speech window, or when the scan reaches the last window index. Let c be the trigger window: with a non-speech trigger the run is [a, c) and c is exclusive; with the last-window trigger c = V - 1 and the last window is inside the run, so the run is [a, c]. The run qualifies as an utterance if (c - a) >= 50, a < b2, and c > b1. For a run reaching the last window, the first condition is (V - 1 - a) >= 50.
 4. For each qualifying run, record a search window: start = max(a - 75, 0), end = min(c + 75, V - 1).
 5. If no run qualifies, there are no utterances and the model cannot proceed.
 
@@ -141,7 +141,7 @@ For each utterance in order: run the coarse correlation of 1.9 restricted to the
 
 ## 1.12 Utterance boundaries
 
-1. Re-scan the reference VAD windows as in 1.11; for each qualifying run record start a and end c (both as window indices, c exclusive).
+1. Re-scan the reference windows exactly as in 1.11, with speech defined by e[v] > 0 and the run-end trigger of 1.11 step 3; for each qualifying run record start a and end c, where c is the trigger window (exclusive for a non-speech trigger, V - 1 for a run reaching the last window).
 2. Boundary merging: start[0] = 75; end[u-1] = V - 75 for the last utterance u-1. For u from 1 to u-1: the boundary between utterance u-1 and u is the midpoint (start[u] + end[u-1])/2 (integer division); set end[u-1] and start[u] to it.
 3. Delay clamp at the left edge: if start[0]*W + delay[0] < 2400, set start[0] = 75 + (W - 1 - delay[0])/W.
 4. Delay clamp at the right edge: if end[u-1]*W + delay[u-1] > N_deg - 2400, set end[u-1] = (N_deg - delay[u-1])/W - 75.
@@ -151,7 +151,7 @@ For each utterance in order: run the coarse correlation of 1.9 restricted to the
 
 For each utterance with at least 200 windows of actual speech (see below), a split is attempted while the utterance count stays below 50.
 
-1. Speech extent: advance the start while the reference VAD value at that window is 0; retreat the end the same way; the speech length is end - start (windows).
+1. Speech extent: set start = utterance start and end = utterance end. Advance start while start < end and the reference energy value e[start] is 0. Retreat end while end > utterance start (the original start, not the advanced one) and the reference energy value e[end] is 0. Then increment end by one, so the speech end is exclusive and lies one window past the last speech window. The speech length is end - start (windows).
 2. If the speech length is below 200 windows, no split is attempted for this utterance.
 3. Breakpoint grid: D = A/(4*W) = 4. Step S = floor((0.801*speech_length + 40*D - 1)/(40*D)) * D. Pad = max(speech_length/10 (integer division), 75). Candidates: b[0] = speech_start + Pad, then b[j] = b[j-1] + S, while b[j] <= speech_end - Pad and j < 40. The candidate count is at most 40.
 4. Per-candidate coarse estimates: for each candidate, run the coarse correlation (1.9) twice, once over [utterance start, candidate] and once over [candidate, utterance end], each seeded with the utterance's coarse estimate. Call the results the left estimate and right estimate.
