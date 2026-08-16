@@ -1,0 +1,16 @@
+[package]
+name = "pesq"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Pure Rust implementation of ITU-T P.862 PESQ speech quality assessment"
+keywords = ["pesq", "audio", "quality", "mos", "itu-t"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+rustfft = "6"
+
+# Conformance WAV files are not redistributable and are loaded from
+# PESQ_CONFORMANCE_DIR at test time; the test harness has no other
+# dependencies beyond std.

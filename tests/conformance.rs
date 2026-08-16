@@ -1,0 +1,192 @@
+//! Conformance harness for the P.862 Annex A 8 kHz VoIP vectors.
+//!
+//! The ITU Annex A WAV files are not redistributable, so they are not
+//! committed to this repository. To run the harness, point the
+//! `PESQ_CONFORMANCE_DIR` environment variable at a directory containing
+//! the Annex A file tree with `voip/` at its root:
+//!
+//! ```text
+//! PESQ_CONFORMANCE_DIR=/path/to/annex-a cargo test --test conformance -- --nocapture
+//! ```
+//!
+//! Without the variable the test prints a skip note and returns, so
+//! `cargo test` stays green everywhere. The expected values are parsed
+//! from `spec/CONFORMANCE.md`, and the acceptance criteria are those of
+//! CONFORMANCE.md section 2: at most one pair may differ from the
+//! expected value by more than 0.05, and no pair may differ by more than
+//! 0.5. Scores are compared rounded to 3 decimal places (CONFORMANCE.md
+//! section 6).
+//!
+//! The 8 kHz WAV files are upsampled to the 16 kHz rate the public API
+//! accepts; [`pesq::pesq`] decimates back to 8 kHz internally.
+
+use std::path::{Path, PathBuf};
+
+/// Path to the conformance vectors shipped in the repository.
+const CONFORMANCE_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/spec/CONFORMANCE.md");
+
+/// Tolerance for a pair to count as conformant (CONFORMANCE.md section 2).
+const DELTA_LIMIT: f32 = 0.05;
+
+/// Maximum pairs allowed to exceed [`DELTA_LIMIT`] (CONFORMANCE.md
+/// section 2).
+const MAX_PAIRS_BEYOND_DELTA: usize = 1;
+
+/// Absolute difference no pair may exceed (CONFORMANCE.md section 2).
+const HARD_DELTA_LIMIT: f32 = 0.5;
+
+/// One conformance vector: a reference/degraded pair and its expected
+/// raw P.862 score.
+struct Vector {
+    index: usize,
+    reference: String,
+    degraded: String,
+    expected: f32,
+}
+
+/// Parse the test 2(b) table out of CONFORMANCE.md.
+///
+/// Table rows have the form
+/// `| 1 | voip/or105.wav | voip/dg105.wav | 2.237 |`. Rows that do not
+/// parse are ignored (headers and prose).
+fn parse_vectors(markdown: &str) -> Vec<Vector> {
+    let mut vectors = Vec::new();
+    for line in markdown.lines() {
+        let mut cells = line.split('|');
+        let _first = cells.next();
+        let Some(index) = cells.next() else { continue };
+        let Some(reference) = cells.next() else { continue };
+        let Some(degraded) = cells.next() else { continue };
+        let Some(expected) = cells.next() else { continue };
+        let Ok(index) = index.trim().parse::<usize>() else {
+            continue;
+        };
+        let Ok(expected) = expected.trim().parse::<f32>() else {
+            continue;
+        };
+        let reference = reference.trim().to_string();
+        let degraded = degraded.trim().to_string();
+        if reference.is_empty() || degraded.is_empty() {
+            continue;
+        }
+        vectors.push(Vector {
+            index,
+            reference,
+            degraded,
+            expected,
+        });
+    }
+    vectors
+}
+
+/// Read mono 16-bit little-endian PCM from a WAV file, skipping the
+/// 44-byte header (spec 01, 1.2 step 2).
+fn read_wav_pcm(path: &Path) -> Vec<i16> {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()));
+    assert!(
+        bytes.len() > 44,
+        "{} is shorter than a WAV header",
+        path.display()
+    );
+    bytes[44..]
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .collect()
+}
+
+/// Upsample 8 kHz PCM to the 16 kHz rate the public API accepts, by
+/// linear interpolation between neighbouring samples.
+fn upsample_8k_to_16k(samples: &[i16]) -> Vec<i16> {
+    let mut upsampled = Vec::with_capacity(samples.len().saturating_mul(2));
+    for (i, &sample) in samples.iter().enumerate() {
+        upsampled.push(sample);
+        let next = samples.get(i + 1).copied().unwrap_or(sample);
+        upsampled.push(((i32::from(sample) + i32::from(next)) / 2) as i16);
+    }
+    upsampled
+}
+
+#[test]
+fn annex_a_8khz_voip_conformance() {
+    let Some(dir) = std::env::var_os("PESQ_CONFORMANCE_DIR") else {
+        eprintln!(
+            "skip: PESQ_CONFORMANCE_DIR is not set; the Annex A WAV files are not \
+             shipped in this repository"
+        );
+        return;
+    };
+    let base = PathBuf::from(dir);
+    let markdown = std::fs::read_to_string(CONFORMANCE_MD)
+        .expect("spec/CONFORMANCE.md must be present in the repository");
+    let vectors = parse_vectors(&markdown);
+    assert!(
+        !vectors.is_empty(),
+        "no conformance vectors parsed from {CONFORMANCE_MD}"
+    );
+    eprintln!(
+        "conformance: {} vectors from {CONFORMANCE_MD}",
+        vectors.len()
+    );
+
+    let mut beyond_delta: Vec<usize> = Vec::new();
+    let mut max_delta = 0.0f32;
+    for vector in &vectors {
+        let reference = read_wav_pcm(&base.join(&vector.reference));
+        let degraded = read_wav_pcm(&base.join(&vector.degraded));
+        let reference_16k = upsample_8k_to_16k(&reference);
+        let degraded_16k = upsample_8k_to_16k(&degraded);
+        let score = pesq::pesq(&reference_16k, &degraded_16k)
+            .unwrap_or_else(|err| panic!("pair {}: pesq failed: {err}", vector.index));
+        let rounded = (score * 1000.0).round() / 1000.0;
+        let delta = (rounded - vector.expected).abs();
+        if delta > max_delta {
+            max_delta = delta;
+        }
+        if delta > DELTA_LIMIT {
+            beyond_delta.push(vector.index);
+        }
+        eprintln!(
+            "pair {:2}: {:26} {:26} score {rounded:.3} expected {:.3} delta {delta:+.3}",
+            vector.index, vector.reference, vector.degraded, vector.expected
+        );
+    }
+
+    // Acceptance criteria of CONFORMANCE.md section 2.
+    assert!(
+        beyond_delta.len() <= MAX_PAIRS_BEYOND_DELTA,
+        "{} pairs differ from the expected value by more than {DELTA_LIMIT} \
+         (at most {MAX_PAIRS_BEYOND_DELTA} allowed): {beyond_delta:?}",
+        beyond_delta.len()
+    );
+    assert!(
+        max_delta <= HARD_DELTA_LIMIT,
+        "maximum absolute difference {max_delta:.3} exceeds the hard limit \
+         of {HARD_DELTA_LIMIT}"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_parser_reads_the_shipped_table() {
+        let markdown = std::fs::read_to_string(CONFORMANCE_MD).unwrap();
+        let vectors = parse_vectors(&markdown);
+        assert_eq!(vectors.len(), 40, "CONFORMANCE.md documents 40 pairs");
+        assert_eq!(vectors[0].index, 1);
+        assert_eq!(vectors[0].reference, "voip/or105.wav");
+        assert_eq!(vectors[0].degraded, "voip/dg105.wav");
+        assert_eq!(vectors[0].expected, 2.237);
+        assert_eq!(vectors[39].index, 40);
+        assert_eq!(vectors[39].reference, "voip/u_am1s03.wav");
+        assert_eq!(vectors[39].degraded, "voip/u_am1s03b2c18.wav");
+        assert_eq!(vectors[39].expected, 2.540);
+    }
+
+    #[test]
+    fn upsample_interleaves_interpolated_samples() {
+        assert_eq!(upsample_8k_to_16k(&[0, 10, 20]), [0, 5, 10, 15, 20, 20]);
+    }
+}
