@@ -83,9 +83,9 @@ After alignment and before the perceptual model: if the two nominal lengths diff
 Input: the working buffer of length N + P (after 1.5 and 1.6). The analysis uses only the first N samples, split into N/W windows of W samples each. The window count is V = N/W (integer; equals L/W + 150).
 
 1. Window energy: for each window v, e[v] = mean of squares of its W samples.
-2. Initial threshold t = mean of e over all windows.
+2. Initial threshold t = mean of e over all windows. The mean is computed from the raw window energies BEFORE the floor of step 3 is applied; an implementation that floors first changes the starting point of the iterations.
 3. Noise floor m = maximum of e over all windows; if m > 0 then m = m * 1e-4, else m = 1. Then floor every window: e[v] = max(e[v], m).
-4. Iterate 12 times: let Q be the set of windows with e[v] <= t. Compute the noise mean as the mean of e over Q and the noise std as the population standard deviation of e over Q (square root of the mean squared deviation), accumulating both sums from 0, so an empty Q would give 0 for both. Then update t = 1.001 * (noise mean + 2 * noise std) unconditionally, on every iteration; with an empty Q, t would become 0. The empty case is unreachable: the floor of step 3 makes every window value at least m, and the minimum window is always in Q, because t starts at the mean of all windows (at least the minimum) and every update produces t = 1.001 * (noise mean + 2 * noise std), which is at least 1.001 times the minimum, as the minimum window lies in Q and the noise std is never negative.
+4. Iterate 12 times: let Q be the set of windows with e[v] <= t. Compute the noise mean as the mean of e over Q and the noise std as the population standard deviation of e over Q (square root of the mean squared deviation), accumulating both sums from 0, so an empty Q gives 0 for both. Then update t = 1.001 * (noise mean + 2 * noise std) unconditionally, on every iteration; with an empty Q, t becomes 0 (and stays 0: an all-silent signal whose raw energies sit below the floor reaches this state in one iteration, because the mean of step 2 can lie below the floor).
 5. After the iterations: signal level = mean of e over windows with e[v] > t, or 0 if there are none (in which case t is set to -1). Noise level = mean of e over the remaining windows, or 1 if none remain.
 6. Sign encoding: negate e[v] for every window with e[v] <= t. (Positive = speech, negative = noise.)
 7. Force e[0] = -m and e[V-1] = -m.
@@ -161,7 +161,20 @@ For each utterance with at least 200 windows of actual speech (see below), a spl
 8. Best split: among candidates where the forward and backward delays differ by at least W samples in absolute value, both confidences exceed the utterance confidence, and the summed confidence exceeds the best so far: keep the candidate, its breakpoint, both estimates and both delays. Tie handling is by scan order (later candidates replace only on strict improvement of the sum).
 9. If a best split exists: shift all utterances after this one one position to the right; the two halves inherit the search window of the original utterance; the left half gets the forward estimates (coarse, fine delay, confidence) and the right half the backward ones. Boundaries: if the backward delay is smaller than the forward delay, left end = right start = breakpoint; otherwise left end = breakpoint + (backward_delay - forward_delay)/(2*W) and right start = breakpoint - (backward_delay - forward_delay)/(2*W), both with integer division truncating toward zero.
 10. Clamp after splitting: if (left start - 75)*W + forward delay < 0, set left start = 75 + (W - 1 - forward delay)/W. If right end*W + backward delay > N_deg - 2400, set right end = (N_deg - backward delay)/W - 75.
-11. Recompute the search windows and continue scanning utterances from the same position (the split may trigger further splits elsewhere, in scan order).
+11. Search windows after the shift: every utterance shifted right by the split replaces its search window with its own current boundaries (search_start = start and search_end = end of that shifted utterance, no 75-window widening); the two split halves keep the search window inherited in step 9. Scanning then continues at the SAME utterance index, which now holds the left half: the next iterations examine the left half first, then the right half, then the later utterances. The left half often holds too little speech to split again, but its re-examination is required. Advancing past the left half to the right half after a split skips the left half entirely and loses the second-level split of a left half that the reference performs (for example the split of [1052, 1683] into [1052, 1535] plus [1535, 1683] in conformance pair 17, and of [75, 448] into [75, 319] plus [295, 448] in pair 25).
+
+## 1.13.1 Shared scratch and the effective split window
+
+The coarse correlations of 1.13 step 4 and the fine passes of 1.13 steps 5 and 7 share one scratch buffer. Layout, in floats from the scratch base: the first fine-pass frame buffer at offset 0 (A + 2 floats), the second at offset A + 2 (A + 2 floats), the histogram H at offset 2A + 4 (A floats), and the window at offset 3A + 6 (A floats). With A = 512 the window occupies offsets 1542..2053.
+
+The window region is filled with the Hann window of 1.10 step 1 once, before the per-candidate coarse estimates of step 4, and this fill happens anew for every split attempt (each call of the 1.13 machinery). Every step-4 correlation that actually runs (both of its clamped lengths above 1) then writes its output, nr + nd - 1 values, at offsets 0..nr + nd - 2, where nr and nd are that call's lengths after the clamps of 1.9 step 7. The calls run in candidate order, left estimate then right estimate per candidate, so a later call overwrites earlier output wherever its output reaches.
+
+The window coefficient at index k that steps 5 and 7 actually apply is therefore:
+
+1. The Hann value, when no step-4 correlation wrote offset 3A + 6 + k.
+2. Otherwise the value of the last step-4 correlation whose output length exceeded 3A + 6 + k.
+
+The output of one correlation can be thousands of floats long, so the low-index window coefficients are overwritten in many split attempts. The overlap is part of the reference behavior and must be reproduced; using a freshly filled Hann window in steps 5 and 7 produces different candidate confidences and can select a different breakpoint (conformance pairs 21, 25, 30, and 35 show the effect). The window of 1.10 is not affected: it lives at a different offset and is filled inside 1.10 itself, after the coarse correlation of 1.9 step 7.
 
 ## 1.14 Frame skipping at negative delay jumps
 
