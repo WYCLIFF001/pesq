@@ -6,10 +6,10 @@
 //! PESQ_CONFORMANCE_DIR=<dir-with-voip> cargo run --example diagnose
 //! ```
 //!
-//! The example runs the pipeline up to the disturbance stage (spec 04 is
-//! not implemented yet, so scoring is impossible) and prints one line per
-//! conformance pair with the intermediate quantities the Round 3
-//! convergence pass needs: the coarse delay, the utterance count and the
+//! The example runs the pipeline through the perceptual model (spec 03)
+//! and prints one line per conformance pair with the intermediate
+//! quantities the conformance pass needs: the coarse delay, the
+//! utterance count and the
 //! per-utterance fine delays with confidences, the negative-delay skip
 //! frame count (spec 01, 1.14), the frame range (spec 03, 3.1), the
 //! silent frame count, and the mean per-frame energy of the reference and

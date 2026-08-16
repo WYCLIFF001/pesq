@@ -53,4 +53,15 @@ mod tests {
         assert_eq!(round_3dp(2.2375), 2.238);
         assert_eq!(round_3dp(-0.0004), -0.0);
     }
+
+    /// Hand-computed mappings of the spec 05 formula
+    /// `0.999 + 4 / (1 + e^(-1.4945x + 4.6607))`.
+    #[test]
+    fn mos_lqo_matches_hand_computed_values() {
+        // x = 0: e^4.6607 = 105.71, so 0.999 + 4/106.71 = 1.03648.
+        assert!((mos_lqo(0.0) - 1.03648).abs() < 1e-4);
+        // x = 4.5: e^(4.6607 - 6.72525) = e^-2.06455 = 0.12687, so
+        // 0.999 + 4/1.12687 = 4.54864.
+        assert!((mos_lqo(4.5) - 4.54864).abs() < 1e-4);
+    }
 }

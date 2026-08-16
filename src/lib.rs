@@ -6,10 +6,7 @@
 //! section 1.15: input handling, preprocessing, and time alignment
 //! ([`input`]), the perceptual model ([`psychoacoustic`], spec 03), the
 //! disturbance processing ([`disturbance`], spec 04), and the scoring
-//! ([`score`], spec 05). One stage is not implemented yet: the two
-//! public functions of [`disturbance`] are still stubs, so [`pesq`]
-//! panics with "not yet implemented" when the pipeline reaches the
-//! disturbance stage.
+//! ([`score`], spec 05).
 //!
 //! # Public API
 //!
@@ -72,12 +69,6 @@ pub use types::PesqError;
 ///   samples after decimation (spec 01, 1.2 step 5).
 /// * [`PesqError::NoUtterancesFound`] when no utterance qualifies
 ///   (spec 01, 1.11 step 5).
-///
-/// # Panics
-///
-/// The disturbance stage of spec 04 is the last remaining stub: this
-/// function panics with "not yet implemented" when the pipeline reaches
-/// [`disturbance::frame_disturbances`].
 pub fn pesq(ref_wav: &[i16], deg_wav: &[i16]) -> Result<f32, PesqError> {
     // spec 01, 1.2: input format and the margin-layout buffers, with the
     // 16 kHz to 8 kHz decimation of the public API.
@@ -158,14 +149,15 @@ mod tests {
         );
     }
 
-    /// The wired pipeline runs input, alignment, and the perceptual
-    /// model and then reaches the disturbance stage, which is the last
-    /// remaining stub (spec 04): the call panics there with the stage
-    /// name in the message.
+    /// The wired pipeline runs all stages and returns a finite score.
+    /// The pair is the same signal twice, so the score must be at the
+    /// clean end of the raw P.862 range (spec 05, 5.1).
     #[test]
-    #[should_panic(expected = "spec 04")]
-    fn pesq_pipeline_reaches_the_stubbed_disturbance_stage() {
+    fn pesq_pipeline_runs_end_to_end() {
         let (reference, degraded) = noise_pair_16k();
-        let _ = pesq(&reference, &degraded);
+        let score = pesq(&reference, &degraded).expect("identical pair must score");
+        assert!(score.is_finite(), "score {score} is not finite");
+        assert!(score <= 4.5, "raw score {score} exceeds 4.5");
+        assert!(score > 3.5, "identical pair scored only {score}");
     }
 }

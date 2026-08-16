@@ -166,8 +166,9 @@ pub fn frame_range(reference: &SignalBuffer) -> FrameRange {
 /// last utterance u with `start[u] * W <= r0`, the first utterance's
 /// delay when none governs (spec 03, 3.2 step 4). The per-utterance
 /// delay is the fine delay of spec 01 section 1.10 step 8, which already
-/// includes the coarse estimate.
-fn governing_delay(r0: usize, utterances: &[Utterance]) -> i32 {
+/// includes the coarse estimate. Shared with the disturbance stage
+/// (spec 04, 4.5.2 step 2).
+pub(crate) fn governing_delay(r0: usize, utterances: &[Utterance]) -> i32 {
     utterances
         .iter()
         .rev()
