@@ -212,6 +212,34 @@ pub const IIR_SECTIONS: [[f32; 5]; 8] = [
     ],
 ];
 
+/// Per-bin linear gains of a filter curve at FFT size `r`, computed
+/// once per (curve, r) pair in a [`std::sync::OnceLock`]-guarded cache.
+/// The cached values are exactly the [`Curve::gain_at`] results, so the
+/// cache is numerically transparent; it only removes the repeated
+/// interpolation and power evaluations.
+fn curve_gains(curve: &Curve, r: usize) -> std::sync::Arc<Vec<f32>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static GAINS: OnceLock<Mutex<HashMap<(usize, usize), Arc<Vec<f32>>>>> = OnceLock::new();
+    let key = (r, curve.points.as_ptr() as usize);
+    GAINS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .entry(key)
+        .or_insert_with(|| {
+            Arc::new(
+                (0..=r / 2)
+                    .map(|k| {
+                        let freq = k as f32 * SAMPLE_RATE_HZ as f32 / r as f32;
+                        curve.gain_at(freq)
+                    })
+                    .collect(),
+            )
+        })
+        .clone()
+}
+
 /// Apply the 8-section input IIR cascade of spec 02 section 2.7 to the
 /// whole buffer in place (spec 01, 1.6).
 ///
@@ -247,11 +275,10 @@ pub fn apply_filter_curve(buffer: &mut [f32], curve: &Curve) {
     let mut scratch = vec![0.0f32; r];
     scratch[..n].copy_from_slice(&buffer[start..start + n]);
     let mut spectrum = real_fft(&scratch);
+    let gains = curve_gains(curve, r);
     for k in 0..=r / 2 {
-        let freq = k as f32 * SAMPLE_RATE_HZ as f32 / r as f32;
-        let gain = curve.gain_at(freq);
-        spectrum[2 * k] *= gain;
-        spectrum[2 * k + 1] *= gain;
+        spectrum[2 * k] *= gains[k];
+        spectrum[2 * k + 1] *= gains[k];
     }
     scratch = inverse_real_fft(&spectrum);
     buffer[start..start + n].copy_from_slice(&scratch[..n]);

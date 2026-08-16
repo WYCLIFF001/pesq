@@ -11,6 +11,23 @@ use crate::dsp::{circular_convolve, correlate, hann_window, spectral_cross_corre
 use crate::types::{ALIGN_FFT_LEN, VadData, WINDOW_SAMPLES};
 
 /// Fine-alignment frame advance, A/4 samples (spec 01, 1.10 step 4e).
+/// Triangular smoothing kernel of spec 01 section 1.10 step 5, computed
+/// once per process: kernel[0] = 1 and kernel[k] = kernel[A - k] =
+/// 1 - k/K for k = 1..=K-1, zeros elsewhere.
+fn smooth_kernel() -> &'static [f32] {
+    use std::sync::OnceLock;
+    static KERNEL: OnceLock<Vec<f32>> = OnceLock::new();
+    KERNEL.get_or_init(|| {
+        let mut kernel = vec![0.0f32; ALIGN_FFT_LEN];
+        kernel[0] = 1.0;
+        for k in 1..SMOOTH_RADIUS {
+            let value = 1.0 - k as f32 / SMOOTH_RADIUS as f32;
+            kernel[k] = value;
+            kernel[ALIGN_FFT_LEN - k] = value;
+        }
+        kernel
+    })
+}
 const FINE_ADVANCE: usize = ALIGN_FFT_LEN / 4;
 
 /// Histogram smoothing radius K = A/64 (spec 01, 1.10 step 5).
@@ -110,15 +127,8 @@ pub fn fine_delay(
 
     // Step 5: circular smoothing with the triangular kernel of radius
     // K = 8: kernel[0] = 1 and kernel[k] = kernel[A - k] = 1 - k/8 for
-    // k = 1..=7.
-    let mut kernel = vec![0.0f32; ALIGN_FFT_LEN];
-    kernel[0] = 1.0;
-    for k in 1..=SMOOTH_RADIUS - 1 {
-        let value = 1.0 - k as f32 / SMOOTH_RADIUS as f32;
-        kernel[k] = value;
-        kernel[ALIGN_FFT_LEN - k] = value;
-    }
-    histogram = circular_convolve(&histogram, &kernel);
+    // k = 1..=7. The kernel is a constant, computed once per process.
+    histogram = circular_convolve(&histogram, smooth_kernel());
 
     // Step 6: divide the smoothed histogram by the raw sum.
     if raw_sum > 0.0 {

@@ -7,6 +7,14 @@
 //! `rustfft` complex transforms provide both; this module adds the real
 //! packing and the three correlation products of spec 02 section 2.8.
 
+//! Note on plans: every transform in this crate is a real-input
+//! transform run through a complex plan. rustfft 6 provides no real FFT
+//! planner, and any real-FFT algorithm computes different butterfly
+//! rounding than the zero-imaginary complex transform, which the
+//! conformance scores (pinned to 3 decimals at delta 0.000) do not
+//! tolerate. Plans are therefore shared and cached, not swapped for a
+//! different algorithm.
+
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
@@ -74,14 +82,33 @@ pub fn inverse_real_fft(packed: &[f32]) -> Vec<f32> {
 
 /// Hann window of length `len` (spec 02, 2.3):
 /// `w[n] = 0.5 * (1 - cos(2*pi*n/T))` for n = 0..T-1.
+///
+/// Windows are computed once per length in a [`std::sync::OnceLock`]-
+/// guarded cache and cloned per call; the coefficients are identical to
+/// the per-call computation, so the cache is numerically transparent.
 pub fn hann_window(len: usize) -> Vec<f32> {
-    let denominator = len as f32;
-    (0..len)
-        .map(|n| {
-            let phase = std::f32::consts::TAU * n as f32 / denominator;
-            0.5 * (1.0 - phase.cos())
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static WINDOWS: OnceLock<Mutex<HashMap<usize, Arc<Vec<f32>>>>> = OnceLock::new();
+    let mut cache = WINDOWS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    cache
+        .entry(len)
+        .or_insert_with(|| {
+            let denominator = len as f32;
+            Arc::new(
+                (0..len)
+                    .map(|n| {
+                        let phase = std::f32::consts::TAU * n as f32 / denominator;
+                        0.5 * (1.0 - phase.cos())
+                    })
+                    .collect(),
+            )
         })
-        .collect()
+        .as_ref()
+        .clone()
 }
 
 /// Correlate two sequences with the FFT procedure of spec 01 section
