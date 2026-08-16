@@ -36,12 +36,20 @@
 //! * [`score`]: spec 05, final score and MOS-LQO mapping.
 //! * [`types`]: shared data structures and constants.
 
+pub mod alignment;
 pub mod disturbance;
 pub mod dsp;
+pub mod dsp_fft;
+pub mod dsp_filters;
 pub mod input;
+pub mod input_buffers;
+pub mod input_filters;
 pub mod psychoacoustic;
 pub mod score;
+pub mod splitting;
 pub mod types;
+pub mod utterances;
+pub mod vad;
 
 pub use types::PesqError;
 
