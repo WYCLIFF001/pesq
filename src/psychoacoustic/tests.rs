@@ -27,7 +27,11 @@ fn bark_table_covers_all_128_bins_and_42_bands() {
     assert_eq!(BARK_BANDS.len(), NUM_BANDS);
     let total: usize = BARK_BANDS.iter().map(|row| row.bins).sum();
     assert_eq!(total, 128, "group counts must sum to 128 (spec 03, 3.3)");
-    assert!(BARK_BANDS.windows(2).all(|w| w[0].bark_centre < w[1].bark_centre));
+    assert!(
+        BARK_BANDS
+            .windows(2)
+            .all(|w| w[0].bark_centre < w[1].bark_centre)
+    );
     assert!(BARK_BANDS.iter().all(|row| row.threshold > 0.0));
 }
 
@@ -75,11 +79,17 @@ fn loudness_follows_the_zwicker_power_law() {
             * (threshold / 0.5).powf(0.23)
             * ((0.5 + 0.5 * f64::from(p) / threshold).powf(0.23) - 1.0);
         let loudness = f64::from(zwicker_loudness(p, band));
-        assert!((loudness - expected).abs() <= expected.abs() * 1e-6, "p = {p}");
+        assert!(
+            (loudness - expected).abs() <= expected.abs() * 1e-6,
+            "p = {p}"
+        );
     }
     // At or below the threshold the loudness is zero (step 3).
     assert_eq!(zwicker_loudness(BARK_BANDS[band].threshold, band), 0.0);
-    assert_eq!(zwicker_loudness(0.5 * BARK_BANDS[band].threshold, band), 0.0);
+    assert_eq!(
+        zwicker_loudness(0.5 * BARK_BANDS[band].threshold, band),
+        0.0
+    );
     // And it grows monotonically with the input density.
     assert!(zwicker_loudness(2.0, band) > zwicker_loudness(1.0, band));
 }

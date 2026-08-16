@@ -63,7 +63,12 @@ impl BarkBand {
 /// The band count B = 42 and the scales Sp and Sl apply for the 8 kHz
 /// narrowband mode; the 16 kHz wideband mode uses 49 bands and different
 /// scales and is out of scope (spec 03, 3.8).
+///
+/// One row per band is the readable transcription of the specification
+/// table, so the formatting of this block is pinned with
+/// `#[rustfmt::skip]`.
 #[allow(clippy::excessive_precision)]
+#[rustfmt::skip]
 pub(super) const BARK_BANDS: [BarkBand; NUM_BANDS] = [
     BarkBand::new(1, 0.078672, 7.867213, 0.157344, 15.734426, 100.0, 51_286_152.0),
     BarkBand::new(1, 0.316341, 31.634144, 0.317994, 31.799433, 99.999_992, 2_454_709.5),

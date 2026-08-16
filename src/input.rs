@@ -63,19 +63,13 @@ pub fn coarse_delay(_reference: &VadData, _degraded: &VadData) -> i32 {
 
 /// Utterance search, per-utterance alignment, boundaries, and splitting
 /// of spec 01 sections 1.10 to 1.13 (stub, Round 2).
-pub fn align_utterances(
-    _reference: &SignalBuffer,
-    _degraded: &SignalBuffer,
-) -> Vec<Utterance> {
+pub fn align_utterances(_reference: &SignalBuffer, _degraded: &SignalBuffer) -> Vec<Utterance> {
     todo!("spec 01, 1.10 to 1.13: utterance alignment")
 }
 
 /// Frame skipping at negative delay jumps of spec 01 section 1.14
 /// (stub, Round 2).
-pub fn negative_delay_skip_flags(
-    _utterances: &[Utterance],
-    _frame_stop: usize,
-) -> Vec<bool> {
+pub fn negative_delay_skip_flags(_utterances: &[Utterance], _frame_stop: usize) -> Vec<bool> {
     todo!("spec 01, 1.14: frame skipping at negative delay jumps")
 }
 

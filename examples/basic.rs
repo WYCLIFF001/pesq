@@ -35,8 +35,8 @@ fn main() {
 /// Read mono 16-bit little-endian PCM from a WAV file, skipping the
 /// 44-byte header (spec 01, 1.2 step 2).
 fn read_wav_pcm(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()));
+    let bytes =
+        std::fs::read(path).unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()));
     assert!(
         bytes.len() > 44,
         "{} is shorter than a WAV header",

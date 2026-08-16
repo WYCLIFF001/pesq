@@ -198,8 +198,7 @@ pub fn warp_to_bark(power: &[f64; NUM_POWER_BINS]) -> [f32; NUM_BANDS] {
     for (band, row) in table::BARK_BANDS.iter().enumerate() {
         let sum: f64 = power[bin..bin + row.bins].iter().sum();
         bin += row.bins;
-        density[band] =
-            (sum * f64::from(row.correction) * table::PITCH_POWER_SCALE) as f32;
+        density[band] = (sum * f64::from(row.correction) * table::PITCH_POWER_SCALE) as f32;
     }
     debug_assert_eq!(bin, NUM_POWER_BINS);
     density
@@ -400,13 +399,17 @@ pub fn run_frame_loop(
     let mut loudness_deg = vec![0.0f32; frame_count * NUM_BANDS];
     let mut audible_ref = vec![0.0f32; frame_count];
     let mut previous_scale = 1.0;
-    for frame in frame_range.start..=frame_range.stop {
+    // The range governs the iteration count (empty when stop < start);
+    // the zip writes the stored audible power without indexing by frame.
+    for (frame, audible) in
+        (frame_range.start..=frame_range.stop).zip(audible_ref.iter_mut().skip(frame_range.start))
+    {
         let base = frame * NUM_BANDS;
         let a_ref = audible_power(&pitch_ref[base..base + NUM_BANDS], 1.0);
         let a_deg = audible_power(&pitch_deg[base..base + NUM_BANDS], 1.0);
         let (unclamped, clamped) = local_scale(a_ref, a_deg, previous_scale, frame);
         previous_scale = unclamped;
-        audible_ref[frame] = a_ref as f32;
+        *audible = a_ref as f32;
         for band in 0..NUM_BANDS {
             pitch_deg[base + band] *= clamped as f32;
         }

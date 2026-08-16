@@ -190,9 +190,16 @@ mod tests {
         let signal = SignalBuffer::from_pcm(&pcm).unwrap();
         assert_eq!(signal.input_len, 4000);
         assert_eq!(signal.nominal_len, 4000 + 2 * MARGIN_SAMPLES);
-        assert_eq!(signal.samples.len(), 4000 + 2 * MARGIN_SAMPLES + PADDING_SAMPLES);
+        assert_eq!(
+            signal.samples.len(),
+            4000 + 2 * MARGIN_SAMPLES + PADDING_SAMPLES
+        );
         assert!(signal.samples[..MARGIN_SAMPLES].iter().all(|&s| s == 0.0));
-        assert!(signal.samples[signal.signal_end()..].iter().all(|&s| s == 0.0));
+        assert!(
+            signal.samples[signal.signal_end()..]
+                .iter()
+                .all(|&s| s == 0.0)
+        );
         assert_eq!(signal.samples[MARGIN_SAMPLES], 0.0);
         assert_eq!(signal.samples[signal.signal_end() - 1], 999.0);
     }
