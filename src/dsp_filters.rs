@@ -217,10 +217,15 @@ pub const IIR_SECTIONS: [[f32; 5]; 8] = [
 /// The cached values are exactly the [`Curve::gain_at`] results, so the
 /// cache is numerically transparent; it only removes the repeated
 /// interpolation and power evaluations.
+/// Gain cache keyed by (FFT size, curve identity), mapping to the
+/// precomputed per-bin gains.
+type GainCache =
+    std::sync::Mutex<std::collections::HashMap<(usize, usize), std::sync::Arc<Vec<f32>>>>;
+
 fn curve_gains(curve: &Curve, r: usize) -> std::sync::Arc<Vec<f32>> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
-    static GAINS: OnceLock<Mutex<HashMap<(usize, usize), Arc<Vec<f32>>>>> = OnceLock::new();
+    static GAINS: OnceLock<GainCache> = OnceLock::new();
     let key = (r, curve.points.as_ptr() as usize);
     GAINS
         .get_or_init(|| Mutex::new(HashMap::new()))
