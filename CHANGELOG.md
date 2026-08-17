@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-08-17
+
+Documentation and formatting release: the same code and scores, now clean
+under every gate in CI.
+
+### Changed
+
+- Fixed all 11 rustdoc warnings (qualified intra-doc links, markdown
+  escaping); cargo doc --no-deps is now warning-free.
+- cargo fmt --all applied; cargo fmt --all --check is clean.
+
+### Fixed
+
+- No behaviour changes; the Annex A conformance remains 40 of 40 pairs
+  at a 3-decimal delta of 0.000.
+
 ## [0.1.1] - 2026-08-16
 
 Performance update: the same scores, several times faster.

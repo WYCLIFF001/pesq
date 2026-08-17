@@ -340,7 +340,10 @@ mod tests {
         let degraded = noise_bursts(2, 42);
         let expected = pesq(&reference, &degraded).unwrap();
         let context = PesqContext::new(&reference).unwrap();
-        assert_eq!(context.score(&degraded).unwrap().to_bits(), expected.to_bits());
+        assert_eq!(
+            context.score(&degraded).unwrap().to_bits(),
+            expected.to_bits()
+        );
         let variant = noise_bursts(2, 43);
         assert_eq!(
             context.score(&variant).unwrap().to_bits(),
@@ -354,7 +357,10 @@ mod tests {
         let degraded = input::decimate_16k_to_8k(&noise_bursts(2, 42));
         let expected = pesq_8k(&reference, &degraded).unwrap();
         let context = PesqContext::new_8k(&reference).unwrap();
-        assert_eq!(context.score(&degraded).unwrap().to_bits(), expected.to_bits());
+        assert_eq!(
+            context.score(&degraded).unwrap().to_bits(),
+            expected.to_bits()
+        );
     }
 
     #[test]
@@ -363,7 +369,9 @@ mod tests {
         let degraded = noise_bursts(3, 42);
         let expected = pesq(&reference, &degraded).unwrap();
         let context = PesqContext::new(&reference).unwrap();
-        assert_eq!(context.score(&degraded).unwrap().to_bits(), expected.to_bits());
+        assert_eq!(
+            context.score(&degraded).unwrap().to_bits(),
+            expected.to_bits()
+        );
     }
-
 }

@@ -12,8 +12,8 @@ mod table;
 
 use crate::types::{FrameRange, SignalBuffer, Utterance};
 use crate::types::{MARGIN_SAMPLES, PADDING_SAMPLES, WINDOW_SAMPLES};
-use rustfft::num_complex::Complex;
 use rustfft::Fft;
+use rustfft::num_complex::Complex;
 
 /// Frame length F in samples, 32 ms (spec 03, 3.1).
 pub const FRAME_LEN: usize = 256;
