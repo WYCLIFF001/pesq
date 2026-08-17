@@ -5,8 +5,8 @@
 //! (1.3), IRS receive filtering and the model copies (1.4), DC removal
 //! and the input IIR filter (1.5 and 1.6), the VAD (1.8), and the
 //! per-utterance alignment (1.9 to 1.13). The stage implementations live
-//! in [`input_buffers`], [`input_filters`], [`vad`], [`alignment`], and
-//! [`utterances`].
+//! in [`crate::input_buffers`], [`crate::input_filters`], [`crate::vad`],
+//! [`crate::alignment`], and [`crate::utterances`].
 
 use crate::input_buffers::normalize_levels;
 use crate::input_filters::{apply_irs_receive, input_iir_filter, remove_dc};

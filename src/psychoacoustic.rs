@@ -65,7 +65,7 @@ const SCALE_SMOOTH_CURRENT: f64 = 0.8;
 const SCALE_MIN: f64 = 3e-4;
 const SCALE_MAX: f64 = 5.0;
 
-/// Bark width w[b] of Table 1 (spec 03, 3.8), the band weight of the
+/// Bark width `w[b]` of Table 1 (spec 03, 3.8), the band weight of the
 /// disturbance norm of spec 04 section 4.2.
 pub fn bark_width(band: usize) -> f32 {
     table::BARK_BANDS[band].bark_width
@@ -191,9 +191,10 @@ fn degraded_start(r0: usize, n_max: usize, utterances: &[Utterance]) -> Option<u
 }
 
 /// Warp a 128-bin power spectrum into the 42 Bark bands (spec 03,
-/// section 3.3): band b sums the next n[b] bins starting at bin 0 (the
-/// already-zeroed DC bin), consuming bins 0..=127, then multiplies by
-/// the correction factor c[b] and by Sp. The sums accumulate in f64 and
+/// section 3.3): band b sums the next `n[b]` bins starting at bin 0
+/// (the already-zeroed DC bin), consuming bins 0..=127, then multiplies
+/// by the correction factor `c[b]` and by Sp. The sums accumulate in f64
+/// and
 /// the result is stored as f32 (spec 01, 1.1).
 pub fn warp_to_bark(power: &[f64; NUM_POWER_BINS]) -> [f32; NUM_BANDS] {
     let mut density = [0.0f32; NUM_BANDS];

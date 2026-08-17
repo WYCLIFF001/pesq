@@ -1,8 +1,9 @@
 //! Fourier transform conventions, windows, and filter tables (spec 02).
 //!
 //! This module is the public face of the two DSP submodules:
-//! [`dsp_fft`] holds the FFT conventions, the Hann window, and the
-//! correlation products; [`dsp_filters`] holds the dB curve machinery,
+//! [`crate::dsp_fft`] holds the FFT conventions, the Hann window, and
+//! the correlation products; [`crate::dsp_filters`] holds the dB curve
+//! machinery,
 //! the two filter curves, the input IIR cascade, and the FFT-domain
 //! filter application of spec 01 section 1.3.1.
 

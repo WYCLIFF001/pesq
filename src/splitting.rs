@@ -1,6 +1,7 @@
 //! Utterance splitting internals (spec 01, section 1.13).
 //!
-//! [`best_split`] runs the candidate machinery of steps 1 to 8 for one
+//! The `best_split` helper runs the candidate machinery of steps 1 to 8
+//! for one
 //! utterance: the speech extent, the breakpoint grid, the per-candidate
 //! coarse estimates, and the forward and backward fine passes with peak
 //! spreading. [`crate::utterances`] applies an accepted split to the
