@@ -13,7 +13,7 @@
 mod table;
 mod table16;
 
-use crate::types::{FrameRange, Rate, RATE_8K, SignalBuffer, Utterance};
+use crate::types::{FrameRange, RATE_8K, Rate, SignalBuffer, Utterance};
 use rustfft::Fft;
 use rustfft::num_complex::Complex;
 
@@ -192,12 +192,7 @@ pub(crate) fn governing_delay(r0: usize, utterances: &[Utterance], rate: Rate) -
 /// Degraded frame start `d0 = r0 + delay`; `None` when the frame lies
 /// out of bounds and the degraded spectrum must be all zeros
 /// (spec 03, 3.2 step 4).
-fn degraded_start(
-    r0: usize,
-    n_max: usize,
-    utterances: &[Utterance],
-    rate: Rate,
-) -> Option<usize> {
+fn degraded_start(r0: usize, n_max: usize, utterances: &[Utterance], rate: Rate) -> Option<usize> {
     let d0 = r0 as i64 + i64::from(governing_delay(r0, utterances, rate));
     if d0 <= 0 || d0 + rate.frame_len() as i64 >= (n_max + rate.padding_samples()) as i64 {
         return None;
@@ -395,8 +390,7 @@ pub fn run_frame_loop(
             if silence_flags[frame] {
                 continue;
             }
-            let limit =
-                COMPENSATION_FACTOR * f64::from(table::bark_table(rate)[band].threshold);
+            let limit = COMPENSATION_FACTOR * f64::from(table::bark_table(rate)[band].threshold);
             if f64::from(ref_density[band]) > limit {
                 ref_sums[band] += f64::from(ref_density[band]);
             }
@@ -409,9 +403,9 @@ pub fn run_frame_loop(
     // Compensation: per-band averages over the fixed divisor of spec 03
     // section 3.5 step 1, the clamped ratio of step 3, applied to every
     // reference frame (step 4).
-    let divisor =
-        (((n_max - 2 * rate.margin_samples() + rate.padding_samples()) / rate.frame_hop()) - 1)
-            as f64;
+    let divisor = (((n_max - 2 * rate.margin_samples() + rate.padding_samples())
+        / rate.frame_hop())
+        - 1) as f64;
     for band in 0..bands {
         let factor = compensation_factor(ref_sums[band] / divisor, deg_sums[band] / divisor);
         for frame in 0..=frame_range.stop {

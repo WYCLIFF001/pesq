@@ -297,7 +297,7 @@ pub(crate) fn coarse_correlation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{RATE_8K, WINDOW_SAMPLES, SignalBuffer};
+    use crate::types::{RATE_8K, SignalBuffer, WINDOW_SAMPLES};
 
     /// VAD data with one burst of `run` speech windows starting at
     /// `onset`, inside `total` windows.
@@ -349,7 +349,10 @@ mod tests {
     fn per_utterance_coarse_returns_the_seed_for_tiny_windows() {
         let reference = vad_with_burst(400, 100, 40);
         let degraded = vad_with_burst(400, 100, 40);
-        assert_eq!(coarse_delay_search(&reference, &degraded, 100, 101, 17, RATE_8K), 17);
+        assert_eq!(
+            coarse_delay_search(&reference, &degraded, 100, 101, 17, RATE_8K),
+            17
+        );
     }
 
     /// A working-buffer pair where the degraded signal is the reference

@@ -83,7 +83,10 @@ fn loudness_follows_the_zwicker_power_law() {
         );
     }
     // At or below the threshold the loudness is zero (step 3).
-    assert_eq!(zwicker_loudness(BARK_BANDS[band].threshold, band, RATE_8K), 0.0);
+    assert_eq!(
+        zwicker_loudness(BARK_BANDS[band].threshold, band, RATE_8K),
+        0.0
+    );
     assert_eq!(
         zwicker_loudness(0.5 * BARK_BANDS[band].threshold, band, RATE_8K),
         0.0

@@ -52,7 +52,13 @@ pub fn apply_wideband(
 /// section 2.7. The decimal digits are transcribed verbatim from the
 /// specification table; the extra precision beyond f32 is intentional.
 #[allow(clippy::excessive_precision)]
-const WIDEBAND_SECTION: [f32; 5] = [2.740_826, -5.481_651_9, 2.740_826, -1.944_477_7, 0.945_977_94];
+const WIDEBAND_SECTION: [f32; 5] = [
+    2.740_826,
+    -5.481_651_9,
+    2.740_826,
+    -1.944_477_7,
+    0.945_977_94,
+];
 
 /// Width of the edge ramps of spec 06 section 6.3, in samples.
 const WIDEBAND_RAMP_SAMPLES: usize = 16;
@@ -203,8 +209,8 @@ mod tests {
     #[test]
     fn wideband_filter_ramps_the_edges_and_shapes_the_region() {
         let len = 8000usize;
-        let mut buffer = SignalBuffer::from_pcm_at(&vec![0i16; len], crate::types::RATE_16K)
-            .unwrap();
+        let mut buffer =
+            SignalBuffer::from_pcm_at(&vec![0i16; len], crate::types::RATE_16K).unwrap();
         let margin = buffer.rate.margin_samples();
         for sample in buffer.samples[margin..margin + len].iter_mut() {
             *sample = 1.0;
@@ -224,7 +230,11 @@ mod tests {
         // DC-free step response settles to b0 + b1 + b2 = 0 for the
         // constant part; the response near the end follows the ramp.
         let mid = margin + 2000;
-        assert!((buffer.samples[mid].abs()) < 1e-3, "mid {}", buffer.samples[mid]);
+        assert!(
+            (buffer.samples[mid].abs()) < 1e-3,
+            "mid {}",
+            buffer.samples[mid]
+        );
         // Rejecting 8 kHz is the wideband mode error of spec 06, 6.2
         // item 2.
         let mut eight_k = SignalBuffer::from_pcm(&vec![0i16; len]).unwrap();

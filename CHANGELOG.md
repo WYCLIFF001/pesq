@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-19
 
 ### Added
 
@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (at most 2 pairs beyond 0.05, none beyond 0.1) and the wideband
   test 4 criterion (all pairs within 0.05) over the 40-pair excerpt of
   spec/CONFORMANCE-supp23.md.
+- Wideband convergence against a proxy corpus, recorded in
+  CONVERGENCE.md section 6: 14 pairs at 5 dB SNR scored by the C
+  reference binary (version 2.0, wideband mode) as a black-box oracle,
+  max absolute MOS-LQO delta 0.004 and mean 0.0005; 14 identity pairs
+  at delta 0.000; a 15 dB SNR set with max delta 0.005 and mean 0.0009.
+  Every pair sits at least an order of magnitude inside the Supp 23
+  test 4 bound of 0.05.
+- The official Supp 23 vectors await the ITU audio: the 1736-pair
+  test 4 set is not redistributable, so the harness activates only
+  when `PESQ_SUPP23_DIR` points at a local copy.
 
 ## [0.1.2] - 2026-08-17
 

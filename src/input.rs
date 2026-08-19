@@ -172,7 +172,9 @@ fn process_pair_mode(
     // 1.7: extend the shorter saved buffer with zeros to Nmax + P.
     let n_max = reference.nominal_len.max(degraded.nominal_len);
     for model in [&mut model_reference, &mut model_degraded] {
-        model.samples.resize(n_max + reference.rate.padding_samples(), 0.0);
+        model
+            .samples
+            .resize(n_max + reference.rate.padding_samples(), 0.0);
     }
 
     Ok(AlignedPair {
@@ -311,7 +313,10 @@ mod tests {
         let (reference, degraded) = noise_pair(8000, 12000);
         let pair = process_pair(reference, degraded).unwrap();
         let n_max = pair.nominal_max();
-        assert_eq!(pair.reference.samples.len(), n_max + crate::types::PADDING_SAMPLES);
+        assert_eq!(
+            pair.reference.samples.len(),
+            n_max + crate::types::PADDING_SAMPLES
+        );
         assert_eq!(pair.degraded.samples.len(), n_max + PADDING_SAMPLES);
         assert!(!pair.utterances.is_empty());
         for utterance in &pair.utterances {

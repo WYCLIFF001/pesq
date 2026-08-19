@@ -249,9 +249,8 @@ pub fn negative_delay_skip_flags(
             if f1 < 0 {
                 f1 = 0;
             }
-            let f2 = ((pair[1].start_window as i64 - 75) * window + (j1 - j0).abs().max(0))
-                / hop
-                + 1;
+            let f2 =
+                ((pair[1].start_window as i64 - 75) * window + (j1 - j0).abs().max(0)) / hop + 1;
             let last = f2.min(frame_stop as i64 - 1);
             for frame in f1..=last {
                 flags[frame as usize] = true;

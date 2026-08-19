@@ -8,9 +8,7 @@ use crate::types::{Rate, SignalBuffer, Utterance};
 
 use super::bad_interval_search_samples;
 use super::norms::{asymmetric_densities, deadzone_removed, lp_norm};
-use super::{
-    BAD_FRAME_GATE, MAX_BAD_INTERVALS, MIN_BAD_INTERVAL_FRAMES, MIN_CORRELATION,
-};
+use super::{BAD_FRAME_GATE, MAX_BAD_INTERVALS, MIN_BAD_INTERVAL_FRAMES, MIN_CORRELATION};
 
 /// Run the bad-interval machinery of spec 04 section 4.5 on the
 /// pre-normalization frame disturbances. Detects the bad intervals of
@@ -47,7 +45,14 @@ pub(crate) fn realign(
         let start_sample = a * rate.frame_hop() + margin;
         let stop_sample = b * rate.frame_hop() + rate.frame_len() + margin;
         let b = b.min(frame_stop);
-        let delay = interval_delay(reference, &realigned, start_sample, stop_sample, n_max, rate);
+        let delay = interval_delay(
+            reference,
+            &realigned,
+            start_sample,
+            stop_sample,
+            n_max,
+            rate,
+        );
         for (i, slot) in second[start_sample..stop_sample].iter_mut().enumerate() {
             let j = (start_sample as i64 + i as i64 + i64::from(delay)).clamp(0, n_max as i64 - 1)
                 as usize;

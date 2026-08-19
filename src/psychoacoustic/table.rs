@@ -6,9 +6,9 @@
 //! accessors and procedures of the parent module.
 
 use super::NUM_BANDS;
-use crate::types::Rate;
 #[cfg(test)]
 use crate::types::RATE_8K;
+use crate::types::Rate;
 
 /// Pitch power density scaling Sp (spec 03, 3.3 step 3). Applied in f64,
 /// where the per-band sum accumulates (spec 01, 1.1). The pipeline

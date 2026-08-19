@@ -77,8 +77,7 @@ pub(crate) fn best_split(
 
     // Step 3: the breakpoint grid.
     let grid = split_grid_step(rate);
-    let step = (((0.801 * speech_length as f64 + 40.0 * grid as f64 - 1.0)
-        / (40.0 * grid as f64))
+    let step = (((0.801 * speech_length as f64 + 40.0 * grid as f64 - 1.0) / (40.0 * grid as f64))
         .floor() as usize)
         * grid;
     let pad = (speech_length / 10).max(75);
@@ -135,8 +134,15 @@ pub(crate) fn best_split(
     let mut i = 0;
     while i < count {
         let seed = left_estimates[i];
-        let mut pass =
-            SplitAccumulator::new(reference, degraded, start, seed, false, &effective_window, rate);
+        let mut pass = SplitAccumulator::new(
+            reference,
+            degraded,
+            start,
+            seed,
+            false,
+            &effective_window,
+            rate,
+        );
         let mut j = i;
         while j < count {
             pass.advance_to(candidates[j] as i64 * window_samples as i64);
@@ -178,8 +184,15 @@ pub(crate) fn best_split(
             break;
         };
         let seed = right_estimates[start_index];
-        let mut pass =
-            SplitAccumulator::new(reference, degraded, end, seed, true, &effective_window, rate);
+        let mut pass = SplitAccumulator::new(
+            reference,
+            degraded,
+            end,
+            seed,
+            true,
+            &effective_window,
+            rate,
+        );
         let mut k = start_index;
         loop {
             pass.advance_to(candidates[k] as i64 * window_samples as i64);
@@ -418,10 +431,7 @@ fn corrupt_window(window: &mut [f32], correlation: &[f32], rate: Rate) {
         return;
     }
     let reach = (correlation.len() - offset).min(window.len());
-    for (slot, &value) in window[..reach]
-        .iter_mut()
-        .zip(&correlation[offset..])
-    {
+    for (slot, &value) in window[..reach].iter_mut().zip(&correlation[offset..]) {
         *slot = value;
     }
 }

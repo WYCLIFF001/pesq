@@ -11,7 +11,9 @@ use crate::types::RATE_8K;
 
 /// Sum of the Bark widths over bands 1..=41, the norm's weight sum.
 fn band_weight_sum() -> f64 {
-    (1..NUM_BANDS).map(|band| f64::from(bark_width(band, RATE_8K))).sum()
+    (1..NUM_BANDS)
+        .map(|band| f64::from(bark_width(band, RATE_8K)))
+        .sum()
 }
 
 #[test]

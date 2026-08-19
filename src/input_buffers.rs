@@ -22,8 +22,8 @@ use crate::types::SignalBuffer;
 /// signals with at least some content.
 pub fn normalize_levels(reference: &mut SignalBuffer, degraded: &mut SignalBuffer) {
     let n_max = reference.nominal_len.max(degraded.nominal_len);
-    let divisor = (n_max - 2 * reference.rate.margin_samples() + reference.rate.padding_samples())
-        as f64;
+    let divisor =
+        (n_max - 2 * reference.rate.margin_samples() + reference.rate.padding_samples()) as f64;
     normalize_one(reference, divisor);
     normalize_one(degraded, divisor);
 }

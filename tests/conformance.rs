@@ -395,7 +395,11 @@ fn supp23_8khz_conformance() {
         }
         eprintln!(
             "supp23 8k pair {:2}: {:26} {:26} score {:.3} expected {:.3} delta {delta:+.3}",
-            vector.index, vector.reference, vector.degraded, round_3dp(score), vector.expected_8k
+            vector.index,
+            vector.reference,
+            vector.degraded,
+            round_3dp(score),
+            vector.expected_8k
         );
     }
 
@@ -451,7 +455,11 @@ fn supp23_wideband_conformance() {
         }
         eprintln!(
             "supp23 wb pair {:2}: {:26} {:26} score {:.3} expected {:.3} delta {delta:+.3}",
-            vector.index, vector.reference, vector.degraded, round_3dp(score), vector.expected_wb
+            vector.index,
+            vector.reference,
+            vector.degraded,
+            round_3dp(score),
+            vector.expected_wb
         );
     }
 
@@ -476,13 +484,19 @@ fn supp23_parser_reads_the_shipped_excerpt() {
         "CONFORMANCE-supp23.md documents a 40-pair excerpt"
     );
     assert_eq!(vectors[0].index, 1);
-    assert_eq!(vectors[0].reference, "g729char/exp3/original/a/a_f01s01.src");
+    assert_eq!(
+        vectors[0].reference,
+        "g729char/exp3/original/a/a_f01s01.src"
+    );
     assert_eq!(vectors[0].degraded, "g729char/exp1/coded/a/ae1f5901.out");
     assert_eq!(vectors[0].expected_16k, 3.575);
     assert_eq!(vectors[0].expected_8k, 3.613);
     assert_eq!(vectors[0].expected_wb, 2.824);
     assert_eq!(vectors[39].index, 40);
-    assert_eq!(vectors[39].reference, "g729char/exp3/original/a/a_m02s10.src");
+    assert_eq!(
+        vectors[39].reference,
+        "g729char/exp3/original/a/a_m02s10.src"
+    );
     assert_eq!(vectors[39].degraded, "g729char/exp1/coded/a/ae1m3610.out");
     assert_eq!(vectors[39].expected_8k, 3.694);
     assert_eq!(vectors[39].expected_wb, 2.934);

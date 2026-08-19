@@ -122,8 +122,8 @@ impl PesqContext {
     fn from_buffer(reference: types::SignalBuffer, eight_k: bool) -> Result<Self, PesqError> {
         let original = reference.clone();
         let mut working = reference;
-        let divisor = (original.nominal_len - 2 * types::MARGIN_SAMPLES + types::PADDING_SAMPLES)
-            as f64;
+        let divisor =
+            (original.nominal_len - 2 * types::MARGIN_SAMPLES + types::PADDING_SAMPLES) as f64;
         input_buffers::normalize_one(&mut working, divisor);
         dsp::apply_filter_curve(
             &mut working.samples,
