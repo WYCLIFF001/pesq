@@ -54,7 +54,7 @@ or, after `cargo install pesq`:
 pesq-cli reference.wav degraded.wav
 ```
 
-The files must be mono 16-bit PCM. The sample rate follows the file header: 8 kHz files are scored natively, and 16 kHz files are decimated to the model rate with an anti-aliasing filter.
+The files must be mono 16-bit PCM. The sample rate follows the file header: 8 kHz files are scored natively, and 16 kHz files are decimated to the model rate with an anti-aliasing filter. With `--wb` the pair is scored in wideband mode (P.862.2): the files must be 16 kHz, and the printed value is the wideband MOS-LQO of spec 06 section 6.5 instead of the raw score.
 
 ## Conformance
 

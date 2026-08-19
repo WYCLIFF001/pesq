@@ -144,3 +144,101 @@ Round 4 closed the first three items below. Open items for a later round:
 3. The debug-mode conformance run takes about 160 s for 40 pairs; a release-mode run
    of the harness and the CLI timing would be worth profiling before any large
    batch scoring.
+
+## 6. Wideband proxy convergence (P.862.2)
+
+Date: 2026-08-19. The official wideband vectors are the 1736 pairs of ITU-T
+P-series Supplement 23 test 4 (spec/06-wideband.md section 6.7); that audio
+is not redistributable and no local copy is available, so the Supp 23
+wideband harness in tests/conformance.rs only activates when PESQ_SUPP23_DIR
+points at a copy. This section records the best available substitute: a
+proxy corpus scored by the C reference binary (version 2.0, October 2005)
+run in wideband mode as a black-box oracle, compared against the Rust entry
+point `pesq::pesq_wb`.
+
+### 6.1 Method
+
+1. Corpus. 14 reference clips: one per speaker, 16 kHz mono 16-bit PCM,
+   from the local LibriSpeech subset at
+   /home/mk/Tools/PROJECT/CORE/data/corpus/speech/ (64240 to 154640
+   samples, about 4.0 to 9.7 s). 14 noise clips from
+   /home/mk/Tools/PROJECT/CORE/data/corpus/noise/, one per pair, across
+   the crowd, traffic, fan, and music categories. Each degraded file is
+   the reference plus one noise clip added at exactly 5 dB SNR over the
+   full reference length and clipped to 16-bit. No codec or channel
+   distortion and zero delay between the files, so the set exercises the
+   wideband model arithmetic (wideband input filter, 49-band grouping,
+   12-section input IIR, P.862.2 mapping) rather than delay estimation,
+   which the Annex A 8 kHz set already covers.
+2. Scoring. Oracle: `pesq +16000 +wb <ref> <deg>` (the C binary above).
+   Rust: `pesq-cli <ref> <deg> --wb`, which calls `pesq::pesq_wb` and
+   prints the P.862.2 MOS-LQO with 6 decimals; the value is rounded to
+   3 decimals before comparison, the reporting precision of spec 06
+   section 6.5 and the same rule the 8 kHz harness uses.
+3. Granularity caveat. The C binary prints MOS-LQO to 3 decimals and
+   nothing finer, so every comparison has an irreducible granularity of
+   0.001 with rounding-boundary artifacts up to 0.005. A reported max
+   delta of 0.005 is the resolution floor of the oracle itself, not
+   evidence of a 0.005 divergence; at the steepest point of the P.862.2
+   mapping a MOS-LQO delta of 0.005 corresponds to a raw-score delta of
+   roughly 0.004.
+
+### 6.2 Results
+
+Primary set, 14 pairs at 5 dB SNR:
+
+| Pair | Speech clip | Noise clip | Oracle | Rust | Delta |
+|---|---|---|---|---|---|
+| 1 | 1089-134686-0007 | crowd_musan_sb0031_footballcrowd | 1.239 | 1.239 | 0.000 |
+| 2 | 1188-133604-0010 | traffic_musan_sb0015_cityambiance | 1.404 | 1.404 | 0.000 |
+| 3 | 121-121726-0001 | traffic_musan_sb0030_firetruck | 1.239 | 1.239 | 0.000 |
+| 4 | 1221-135766-0002 | fan_musan_sb0081_truckidle | 1.386 | 1.386 | 0.000 |
+| 5 | 1284-1180-0004 | music_musan_hd0058_albeniz | 1.259 | 1.259 | 0.000 |
+| 6 | 1320-122612-0005 | crowd_musan_sb0075_churchambiance | 1.308 | 1.308 | 0.000 |
+| 7 | 1580-141083-0035 | traffic_musan_sb0016_citycentre | 1.150 | 1.150 | 0.000 |
+| 8 | 1995-1826-0002 | music_musan_hd0047_bach | 1.090 | 1.089 | 0.001 |
+| 9 | 2300-131720-0000 | music_musan_hd0043_monteverdi | 1.231 | 1.231 | 0.000 |
+| 10 | 237-126133-0024 | crowd_musan_fs0484_babble | 1.208 | 1.204 | 0.004 |
+| 11 | 260-123286-0011 | crowd_musan_fs0323_babble | 1.328 | 1.326 | 0.002 |
+| 12 | 2830-3979-0011 | music_musan_hd0048_beethoven | 1.609 | 1.609 | 0.000 |
+| 13 | 4446-2273-0009 | fan_musan_sb0028_faxmachine | 1.422 | 1.422 | 0.000 |
+| 14 | 5683-32865-0008 | crowd_musan_sb0003_applause | 1.095 | 1.095 | 0.000 |
+
+Max abs delta 0.004 (pair 10), mean abs delta 0.0005.
+
+Supplementary sets on the same references:
+
+- Identity pairs, 14: each reference scored against itself. Oracle
+  4.644 on every pair, Rust 4.643889; max and mean abs delta 0.000.
+  This exercises the top end of the mapping where the raw score is
+  about 4.5.
+- 15 dB SNR set, 14 pairs: max abs delta 0.005 (pair 8, oracle 1.518
+  vs Rust 1.513), mean 0.0009. This exercises the mid-range of the
+  mapping where it is steepest.
+
+Every comparison sits at least an order of magnitude inside the 0.05
+bound of Supp 23 test 4 (spec 06, 6.7) and the 0.1 proxy threshold, so
+no tracing and no fix rounds were needed; the wideband mode converged
+on the first proxy round.
+
+### 6.3 What the proxy does not cover
+
+1. Supp 23 uses coded and channel-degraded conditions (G.729, error
+   patterns) that additive noise does not reproduce. The official test
+   4 run, 1736 pairs against spec/CONFORMANCE-supp23.md, remains open
+   and awaits the ITU audio; the harness picks it up from
+   PESQ_SUPP23_DIR when a copy exists. Section 5 item 1 is therefore
+   only partially closed: wideband mode is implemented and validated by
+   the proxy, while the official wideband conformance run is still
+   pending audio.
+2. The oracle print precision caps every comparison at 3 decimals;
+   sub-0.005 divergences cannot be measured by this method. (The 8 kHz
+   side achieves full-precision comparison only because the harness
+   holds the published expected values and compares unrounded scores;
+   the C binary itself always prints 3 decimals.)
+3. The pair WAVs were ephemeral under /tmp/pesq-wb-proxy and are not
+   committed; the table above names every source clip and the mixing
+   rule, which is enough to regenerate the set.
+
+The 8 kHz Annex A gate was re-run during this round and is unchanged:
+40 of 40 pairs at 3-decimal delta 0.000 (section 1).

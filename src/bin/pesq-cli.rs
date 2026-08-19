@@ -3,34 +3,41 @@
 //! Usage:
 //!
 //! ```text
-//! pesq-cli <reference.wav> <degraded.wav>
+//! pesq-cli <reference.wav> <degraded.wav> [--wb]
 //! ```
 //!
 //! Reads two mono 16-bit PCM WAV files, picks the 8 kHz entry point for
 //! 8 kHz files and the 16 kHz entry point for 16 kHz files, and prints
-//! the raw P.862 score (spec 05, 5.1) on stdout. Anything else goes to
-//! stderr, and the exit code is nonzero on failure.
+//! the raw P.862 score (spec 05, 5.1) on stdout. With `--wb` the pair is
+//! scored in wideband mode (spec 06): the files must be 16 kHz, and the
+//! printed value is the P.862.2 MOS-LQO of spec 06 section 6.5. Anything
+//! else goes to stderr, and the exit code is nonzero on failure.
 
 use std::fmt;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        eprintln!("usage: {} <reference.wav> <degraded.wav>", args[0]);
-        eprintln!("scores the pair and prints the raw P.862 score");
-        std::process::exit(2);
-    }
-    let reference = match read_wav(&args[1]) {
+    let (wideband, file_args) = match args.len() {
+        3 => (false, &args[1..3]),
+        4 if args[3] == "--wb" => (true, &args[1..3]),
+        _ => {
+            eprintln!("usage: {} <reference.wav> <degraded.wav> [--wb]", args[0]);
+            eprintln!("scores the pair and prints the raw P.862 score, or the");
+            eprintln!("P.862.2 MOS-LQO in wideband mode with --wb");
+            std::process::exit(2);
+        }
+    };
+    let reference = match read_wav(&file_args[0]) {
         Ok(wav) => wav,
         Err(err) => {
-            eprintln!("{}: {err}", args[1]);
+            eprintln!("{}: {err}", file_args[0]);
             std::process::exit(1);
         }
     };
-    let degraded = match read_wav(&args[2]) {
+    let degraded = match read_wav(&file_args[1]) {
         Ok(wav) => wav,
         Err(err) => {
-            eprintln!("{}: {err}", args[2]);
+            eprintln!("{}: {err}", file_args[1]);
             std::process::exit(1);
         }
     };
@@ -41,10 +48,19 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let score = match reference.sample_rate {
-        8000 => pesq::pesq_8k(&reference.samples, &degraded.samples),
-        16000 => pesq::pesq(&reference.samples, &degraded.samples),
-        rate => {
+    if wideband && reference.sample_rate != 16000 {
+        eprintln!(
+            "--wb requires 16 kHz input (spec 06, 6.2 item 2), got {} Hz",
+            reference.sample_rate
+        );
+        std::process::exit(1);
+    }
+    let score = match (wideband, reference.sample_rate) {
+        (true, 16000) => pesq::pesq_wb(&reference.samples, &degraded.samples),
+        (false, 8000) => pesq::pesq_8k(&reference.samples, &degraded.samples),
+        (false, 16000) => pesq::pesq(&reference.samples, &degraded.samples),
+        (true, _) => unreachable!("wideband rate checked above"),
+        (false, rate) => {
             eprintln!("unsupported sample rate {rate} Hz (expected 8000 or 16000)");
             std::process::exit(1);
         }
