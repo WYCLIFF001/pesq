@@ -2,21 +2,15 @@
 //! (spec 04, section 4.5).
 
 use crate::psychoacoustic::{
-    FRAME_HOP, FRAME_LEN, NUM_BANDS, PerceptualModel, audible_power, governing_delay, local_scale,
-    warp_to_bark, zwicker_loudness,
+    PerceptualModel, audible_power, governing_delay, local_scale, warp_to_bark, zwicker_loudness,
 };
-use crate::types::{MARGIN_SAMPLES, PADDING_SAMPLES, SignalBuffer, Utterance};
+use crate::types::{Rate, SignalBuffer, Utterance};
 
+use super::bad_interval_search_samples;
 use super::norms::{asymmetric_densities, deadzone_removed, lp_norm};
 use super::{
-    BAD_FRAME_GATE, BAD_INTERVAL_SEARCH_SAMPLES, MAX_BAD_INTERVALS, MIN_BAD_INTERVAL_FRAMES,
-    MIN_CORRELATION,
+    BAD_FRAME_GATE, MAX_BAD_INTERVALS, MIN_BAD_INTERVAL_FRAMES, MIN_CORRELATION,
 };
-
-/// Number of power bins the band grouping consumes: bins 0..=127 of the
-/// 256-point spectrum (spec 03, 3.2 and 3.3). The Nyquist bin is not
-/// grouped.
-const POWER_BINS: usize = FRAME_LEN / 2;
 
 /// Run the bad-interval machinery of spec 04 section 4.5 on the
 /// pre-normalization frame disturbances. Detects the bad intervals of
@@ -32,6 +26,7 @@ pub(crate) fn realign(
     symmetric: &mut [f32],
     asymmetric: &mut [f32],
 ) {
+    let rate = model.rate;
     let frame_stop = model.frame_range.stop;
     let intervals = collect_intervals(&dilate(&bad_mask(symmetric)));
     if intervals.is_empty() {
@@ -41,17 +36,18 @@ pub(crate) fn realign(
     // T2 buffers of 4.5.2 and 4.5.4 have Nmax + P samples, and the
     // clamps take Nmax (spec 04, 4.5.2 step 2 and 4.5.4 step 2).
     let n_max = reference.nominal_len.max(degraded.nominal_len);
-    let realigned = first_realigned(degraded, utterances, n_max);
+    let realigned = first_realigned(degraded, utterances, n_max, rate);
 
     // spec 04, 4.5.3 to 4.5.4 step 2: one delay per interval, then the
     // second re-aligned signal built from the first with that delay.
     let mut second = realigned.clone();
     let mut capped = Vec::with_capacity(intervals.len());
     for &(a, b) in &intervals {
-        let start_sample = a * FRAME_HOP + MARGIN_SAMPLES;
-        let stop_sample = b * FRAME_HOP + FRAME_LEN + MARGIN_SAMPLES;
+        let margin = rate.margin_samples();
+        let start_sample = a * rate.frame_hop() + margin;
+        let stop_sample = b * rate.frame_hop() + rate.frame_len() + margin;
         let b = b.min(frame_stop);
-        let delay = interval_delay(reference, &realigned, start_sample, stop_sample, n_max);
+        let delay = interval_delay(reference, &realigned, start_sample, stop_sample, n_max, rate);
         for (i, slot) in second[start_sample..stop_sample].iter_mut().enumerate() {
             let j = (start_sample as i64 + i as i64 + i64::from(delay)).clamp(0, n_max as i64 - 1)
                 as usize;
@@ -119,17 +115,20 @@ pub(crate) fn collect_intervals(dilated: &[bool]) -> Vec<(usize, usize)> {
 /// `[2400, Nmax + P - 2400)` the degraded sample at
 /// `i + delay`, clamped to `[2400, Nmax + P - 2400 - 1]`, where delay is
 /// the governing utterance's delay at i.
-fn first_realigned(degraded: &SignalBuffer, utterances: &[Utterance], n_max: usize) -> Vec<f32> {
-    let len = n_max + PADDING_SAMPLES;
+fn first_realigned(
+    degraded: &SignalBuffer,
+    utterances: &[Utterance],
+    n_max: usize,
+    rate: Rate,
+) -> Vec<f32> {
+    let margin = rate.margin_samples();
+    let len = n_max + rate.padding_samples();
     let mut realigned = vec![0.0f32; len];
-    let lo = MARGIN_SAMPLES as i64;
-    let hi = len as i64 - MARGIN_SAMPLES as i64 - 1;
-    for (i, slot) in realigned[MARGIN_SAMPLES..len - MARGIN_SAMPLES]
-        .iter_mut()
-        .enumerate()
-    {
-        let position = MARGIN_SAMPLES + i;
-        let delay = i64::from(governing_delay(position, utterances));
+    let lo = margin as i64;
+    let hi = len as i64 - margin as i64 - 1;
+    for (i, slot) in realigned[margin..len - margin].iter_mut().enumerate() {
+        let position = margin + i;
+        let delay = i64::from(governing_delay(position, utterances, rate));
         let j = (position as i64 + delay).clamp(lo, hi) as usize;
         *slot = degraded.samples[j];
     }
@@ -198,8 +197,9 @@ pub(crate) fn interval_delay(
     start_sample: usize,
     stop_sample: usize,
     n_max: usize,
+    rate: Rate,
 ) -> i32 {
-    let s = BAD_INTERVAL_SEARCH_SAMPLES;
+    let s = bad_interval_search_samples(rate);
     let n = stop_sample - start_sample;
     let m = 2 * s + n;
     let r = (2 * m).next_power_of_two();
@@ -214,8 +214,9 @@ pub(crate) fn interval_delay(
     }
     // Degraded segment: |T[j]| with j = start_sample - s + i, clamped.
     let mut y = vec![0.0f32; r];
-    let lo = MARGIN_SAMPLES as i64;
-    let hi = n_max as i64 + PADDING_SAMPLES as i64 - MARGIN_SAMPLES as i64 - 1;
+    let margin = rate.margin_samples() as i64;
+    let lo = margin;
+    let hi = n_max as i64 + rate.padding_samples() as i64 - margin - 1;
     for (i, slot) in y[..m].iter_mut().enumerate() {
         let j = (start_sample as i64 + i as i64 - s as i64).clamp(lo, hi) as usize;
         *slot = realigned[j].abs();
@@ -249,17 +250,18 @@ pub(crate) fn interval_delay(
 /// delay): Hann window, forward FFT, `real^2 + imag^2` per bin, bin 0
 /// forced to zero, warped to the Bark bands (spec 04, 4.5.4 step 3a-3b
 /// with spec 03, 3.2 and 3.3).
-fn degraded_density(samples: &[f32], start: usize, window: &[f32]) -> [f32; NUM_BANDS] {
-    let windowed: Vec<f32> = (0..FRAME_LEN)
+fn degraded_density(samples: &[f32], start: usize, window: &[f32], rate: Rate) -> Vec<f32> {
+    let frame_len = rate.frame_len();
+    let windowed: Vec<f32> = (0..frame_len)
         .map(|i| samples[start + i] * window[i])
         .collect();
     let packed = crate::dsp::real_fft(&windowed);
-    let mut power = [0.0f64; POWER_BINS];
-    for (bin, pair) in packed.chunks_exact(2).take(POWER_BINS).enumerate() {
+    let mut power = vec![0.0f64; rate.num_power_bins()];
+    for (bin, pair) in packed.chunks_exact(2).take(power.len()).enumerate() {
         power[bin] = f64::from(pair[0] * pair[0] + pair[1] * pair[1]);
     }
     power[0] = 0.0;
-    warp_to_bark(&power)
+    warp_to_bark(&power, rate)
 }
 
 /// Re-run the perceptual model on the second re-aligned degraded signal
@@ -276,37 +278,39 @@ fn recompute_frames(
     symmetric: &mut [f32],
     asymmetric: &mut [f32],
 ) {
-    let window = crate::dsp::hann_window(FRAME_LEN);
-    let mut d = [0.0f32; NUM_BANDS];
-    let mut d_asym = [0.0f32; NUM_BANDS];
+    let rate = model.rate;
+    let bands = rate.num_bands();
+    let window = crate::dsp::hann_window(rate.frame_len());
+    let mut d = vec![0.0f32; bands];
+    let mut d_asym = vec![0.0f32; bands];
     for &(a, b) in intervals {
         let mut previous_scale = 1.0;
         for frame in a..b {
-            let base = frame * NUM_BANDS;
-            let r0 = MARGIN_SAMPLES + frame * FRAME_HOP;
-            let mut deg_density = degraded_density(second, r0, &window);
-            let a_ref = audible_power(&model.pitch_ref[base..base + NUM_BANDS], 1.0);
-            let a_deg = audible_power(&deg_density, 1.0);
+            let base = frame * bands;
+            let r0 = rate.margin_samples() + frame * rate.frame_hop();
+            let mut deg_density = degraded_density(second, r0, &window, rate);
+            let a_ref = audible_power(&model.pitch_ref[base..base + bands], 1.0, rate);
+            let a_deg = audible_power(&deg_density, 1.0, rate);
             let (unclamped, clamped) = local_scale(a_ref, a_deg, previous_scale, frame);
             previous_scale = unclamped;
             for band in deg_density.iter_mut() {
                 *band *= clamped as f32;
             }
-            let mut loudness_ref = [0.0f32; NUM_BANDS];
-            let mut loudness_deg = [0.0f32; NUM_BANDS];
-            for band in 0..NUM_BANDS {
-                loudness_ref[band] = zwicker_loudness(model.pitch_ref[base + band], band);
-                loudness_deg[band] = zwicker_loudness(deg_density[band], band);
+            let mut loudness_ref = vec![0.0f32; bands];
+            let mut loudness_deg = vec![0.0f32; bands];
+            for band in 0..bands {
+                loudness_ref[band] = zwicker_loudness(model.pitch_ref[base + band], band, rate);
+                loudness_deg[band] = zwicker_loudness(deg_density[band], band, rate);
             }
             deadzone_removed(&loudness_ref, &loudness_deg, &mut d);
-            symmetric[frame] = symmetric[frame].min(lp_norm(&d, 2.0) as f32);
+            symmetric[frame] = symmetric[frame].min(lp_norm(&d, 2.0, rate) as f32);
             asymmetric_densities(
                 &d,
-                &model.pitch_ref[base..base + NUM_BANDS],
+                &model.pitch_ref[base..base + bands],
                 &deg_density,
                 &mut d_asym,
             );
-            asymmetric[frame] = asymmetric[frame].min(lp_norm(&d_asym, 1.0) as f32);
+            asymmetric[frame] = asymmetric[frame].min(lp_norm(&d_asym, 1.0, rate) as f32);
         }
     }
 }

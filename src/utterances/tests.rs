@@ -1,6 +1,7 @@
 //! Tests for utterance boundaries, splitting, and frame skipping.
 
 use super::*;
+use crate::types::{MARGIN_SAMPLES, RATE_8K, WINDOW_SAMPLES};
 use crate::vad::voice_activity_detection;
 
 /// A work utterance with the given boundaries and zero delays.
@@ -150,7 +151,7 @@ fn skip_flags_mark_the_frame_range_of_a_negative_jump() {
             split_frame: None,
         },
     ];
-    let flags = negative_delay_skip_flags(&utterances, 40);
+    let flags = negative_delay_skip_flags(&utterances, 40, RATE_8K);
     // f1 = trunc((125 * 32 - 200) / 128) = 29, j = trunc(2400 / 128) = 18,
     // f1 > j so f1 = 18; f2 = trunc(4200 / 128) + 1 = 33.
     assert!(!flags[17]);
@@ -181,7 +182,7 @@ fn skip_flags_never_mark_frame_stop_itself() {
             split_frame: None,
         },
     ];
-    let flags = negative_delay_skip_flags(&utterances, 33);
+    let flags = negative_delay_skip_flags(&utterances, 33, RATE_8K);
     assert!(flags[18]);
     assert!(flags[32]);
     assert!(!flags[33]);
@@ -209,7 +210,7 @@ fn skip_flags_use_truncating_division_for_the_upper_bound() {
             split_frame: None,
         },
     ];
-    let flags = negative_delay_skip_flags(&utterances, 40);
+    let flags = negative_delay_skip_flags(&utterances, 40, RATE_8K);
     // f1 = trunc(-736 / 128) = -5, j = trunc(-800 / 128) = -6, f1 > j so
     // f1 = j = -6, then f1 < 0 so f1 = 0; f2 = trunc(-224 / 128) + 1 = 0.
     assert!(flags[0]);
@@ -236,7 +237,7 @@ fn skip_flags_ignore_small_jumps() {
             split_frame: None,
         },
     ];
-    let flags = negative_delay_skip_flags(&utterances, 40);
+    let flags = negative_delay_skip_flags(&utterances, 40, RATE_8K);
     assert!(flags.iter().all(|&flag| !flag));
 }
 

@@ -1,93 +1,20 @@
-//! Table 1 of spec 03 section 3.8 and the Sp/Sl scaling constants.
+//! Table 1 of spec 06 section 6.4.1: the 49 Bark bands for 16 kHz.
 //!
-//! Everything here is module-private (`pub(super)` visibility): the Bark
-//! table and the two scaling constants are internal data of the
-//! perceptual model, exposed to the rest of the crate only through the
-//! accessors and procedures of the parent module.
+//! Same row layout as [`super::table::BARK_BANDS`] (spec 03, 3.8): the
+//! group counts sum to 256, covering bins 1..=256 of the 512-point power
+//! spectrum, and bands 42 to 48 extend coverage to a top band centred at
+//! 7796.5 Hz. The decimal digits are transcribed verbatim from the
+//! specification table; the extra precision beyond f32 is intentional.
+//!
+//! One row per band is the readable transcription of the specification
+//! table, so the formatting of this block is pinned with
+//! `#[rustfmt::skip]`.
 
-use super::NUM_BANDS;
-use crate::types::Rate;
-#[cfg(test)]
-use crate::types::RATE_8K;
+use super::table::BarkBand;
 
-/// Pitch power density scaling Sp (spec 03, 3.3 step 3). Applied in f64,
-/// where the per-band sum accumulates (spec 01, 1.1). The pipeline
-/// itself reads the scale through [`Rate::pitch_power_scale`]; this
-/// constant pins the 8 kHz value for the unit tests.
-#[cfg(test)]
-pub(super) const PITCH_POWER_SCALE: f64 = RATE_8K.pitch_power_scale();
-
-/// Loudness scaling Sl (spec 03, 3.6 step 4). Applied in f64, where the
-/// loudness is computed (spec 01, 1.1). The pipeline itself reads the
-/// scale through [`Rate::loudness_scale`]; this constant pins the value
-/// for the unit tests.
-#[cfg(test)]
-pub(super) const LOUDNESS_SCALE: f64 = RATE_8K.loudness_scale();
-
-/// The Bark band table of the given rate: 42 bands at 8 kHz (spec 03,
-/// 3.8), 49 bands at 16 kHz (spec 06, 6.4.1).
-pub(super) fn bark_table(rate: Rate) -> &'static [BarkBand] {
-    match rate {
-        Rate::Rate8k => &BARK_BANDS,
-        Rate::Rate16k => &crate::psychoacoustic::table16::BARK_BANDS_16K,
-    }
-}
-
-/// One Bark band row of Table 1 of spec 03 section 3.8. Column order:
-/// number of grouped bins, Bark centre, Hz centre, Bark width, Hz width,
-/// power density correction factor, absolute hearing threshold power.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct BarkBand {
-    pub(super) bins: usize,
-    pub(super) bark_centre: f32,
-    pub(super) hz_centre: f32,
-    pub(super) bark_width: f32,
-    pub(super) hz_width: f32,
-    pub(super) correction: f32,
-    pub(super) threshold: f32,
-}
-
-impl BarkBand {
-    /// Construct a row of Table 1, in the column order of spec 03
-    /// section 3.8.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) const fn new(
-        bins: usize,
-        bark_centre: f32,
-        hz_centre: f32,
-        bark_width: f32,
-        hz_width: f32,
-        correction: f32,
-        threshold: f32,
-    ) -> Self {
-        Self {
-            bins,
-            bark_centre,
-            hz_centre,
-            bark_width,
-            hz_width,
-            correction,
-            threshold,
-        }
-    }
-}
-
-/// Table 1 of spec 03 section 3.8: the 42 Bark bands for 8 kHz. The
-/// group counts sum to 128, covering bins 1..=128 of the 256-point power
-/// spectrum (bin 0 is forced to zero before warping, spec 03, 3.2
-/// step 3). The decimal digits are transcribed verbatim from the
-/// specification table; the extra precision beyond f32 is intentional.
-///
-/// The band count B = 42 and the scale Sp apply for the 8 kHz
-/// narrowband mode; the 16 kHz mode uses the 49-band table of
-/// [`table16`] and its own Sp (spec 06, 6.4.1). Sl is shared.
-///
-/// One row per band is the readable transcription of the specification
-/// table, so the formatting of this block is pinned with
-/// `#[rustfmt::skip]`.
 #[allow(clippy::excessive_precision)]
 #[rustfmt::skip]
-pub(super) const BARK_BANDS: [BarkBand; NUM_BANDS] = [
+pub(super) const BARK_BANDS_16K: [BarkBand; 49] = [
     BarkBand::new(1, 0.078672, 7.867213, 0.157344, 15.734426, 100.0, 51_286_152.0),
     BarkBand::new(1, 0.316341, 31.634144, 0.317994, 31.799433, 99.999_992, 2_454_709.5),
     BarkBand::new(1, 0.636559, 63.655895, 0.322441, 32.244064, 100.0, 70_794.593_75),
@@ -129,5 +56,12 @@ pub(super) const BARK_BANDS: [BarkBand; NUM_BANDS] = [
     BarkBand::new(8, 15.536238, 2952.586670, 0.517250, 240.600098, 58.144_047, 0.512_861),
     BarkBand::new(9, 16.056736, 3205.835449, 0.523745, 268.702393, 57.004_543, 0.524_807),
     BarkBand::new(9, 16.583761, 3492.679932, 0.530308, 306.060059, 64.126_297, 0.524_807),
-    BarkBand::new(11, 17.117382, 3820.219238, 0.536934, 349.937012, 59.248_363, 0.524_807),
+    BarkBand::new(12, 17.117382, 3820.219238, 0.536934, 349.937012, 54.311_001, 0.524_807),
+    BarkBand::new(12, 17.657663, 4193.938477, 0.543629, 398.686279, 61.114_979, 0.512_861),
+    BarkBand::new(15, 18.204674, 4619.846191, 0.550390, 454.713867, 55.077_751, 0.478_63),
+    BarkBand::new(16, 18.758478, 5100.437012, 0.557220, 506.841797, 56.849_335, 0.426_58),
+    BarkBand::new(18, 19.319147, 5636.199219, 0.564119, 564.863770, 55.628_868, 0.371_535),
+    BarkBand::new(21, 19.886751, 6234.313477, 0.571085, 637.261230, 53.137_054, 0.363_078),
+    BarkBand::new(25, 20.461355, 6946.734863, 0.578125, 794.717285, 54.985_844, 0.416_869),
+    BarkBand::new(20, 21.043034, 7796.473633, 0.585232, 931.068359, 79.546_974, 0.537_032),
 ];

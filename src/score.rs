@@ -15,6 +15,15 @@ pub fn mos_lqo(raw: f64) -> f32 {
     (0.999 + 4.0 / (1.0 + (-1.4945 * raw + 4.6607).exp())) as f32
 }
 
+/// P.862.2 MOS-LQO mapping of the raw score (spec 06, 6.5):
+/// `0.999 + 4.0 / (1.0 + e^(-1.3669 * x + 3.8224))`. The input is the
+/// unrounded f32 raw score, exactly as in narrowband mode; wideband mode
+/// computes the raw score but reports only this mapped value (spec 06,
+/// 6.5). The two mappings are not interchangeable.
+pub fn mos_lqo_wb(raw: f64) -> f32 {
+    (0.999 + 4.0 / (1.0 + (-1.3669 * raw + 3.8224).exp())) as f32
+}
+
 /// Round a score to 3 decimal places, the reporting precision of the
 /// specification (spec 05, 5.3).
 pub fn round_3dp(value: f32) -> f32 {
@@ -63,5 +72,22 @@ mod tests {
         // x = 4.5: e^(4.6607 - 6.72525) = e^-2.06455 = 0.12687, so
         // 0.999 + 4/1.12687 = 4.54864.
         assert!((mos_lqo(4.5) - 4.54864).abs() < 1e-4);
+    }
+
+    /// Hand-computed values of the spec 06 formula
+    /// `0.999 + 4 / (1 + e^(-1.3669x + 3.8224))`.
+    #[test]
+    fn mos_lqo_wb_matches_hand_computed_values() {
+        // x = 3.575: exponent -1.3669 * 3.575 + 3.8224 = -1.06416...,
+        // e^-1.06416 = 0.34494, so 0.999 + 4/1.34494 = 3.9730.
+        assert!((mos_lqo_wb(3.575) - 3.9730).abs() < 5e-4);
+        // x = 2.798: exponent -1.3669 * 2.798 + 3.8224 = -0.00218...,
+        // e^-0.00218 = 0.99782, so 0.999 + 4/1.99782 = 3.00118.
+        assert!((mos_lqo_wb(2.798) - 3.00118).abs() < 5e-4);
+        // The mapping is monotone and stays inside [0.999, 4.999].
+        assert!(mos_lqo_wb(4.5) > mos_lqo_wb(1.0));
+        assert!(mos_lqo_wb(1.0) > mos_lqo_wb(-0.5));
+        assert!(mos_lqo_wb(-0.5) > 0.999);
+        assert!(mos_lqo_wb(4.5) < 4.999);
     }
 }

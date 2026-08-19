@@ -9,7 +9,7 @@
 
 use crate::alignment::{coarse_delay_search, fine_delay, qualifying_runs, search_windows};
 use crate::splitting::best_split;
-use crate::types::{MARGIN_SAMPLES, PesqError, SignalBuffer, Utterance, VadData, WINDOW_SAMPLES};
+use crate::types::{PesqError, Rate, SignalBuffer, Utterance, VadData};
 
 /// Cap on the utterance count during splitting (spec 01, 1.13 preamble).
 const MAX_UTTERANCES: usize = 50;
@@ -41,19 +41,20 @@ pub fn align_utterances(
     ref_vad: &VadData,
     deg_vad: &VadData,
 ) -> Result<Vec<Utterance>, PesqError> {
-    let coarse = crate::alignment::coarse_delay_whole(ref_vad, deg_vad);
-    let runs = qualifying_runs(ref_vad, coarse, degraded.nominal_len);
+    let rate = reference.rate;
+    let coarse = crate::alignment::coarse_delay_whole(ref_vad, deg_vad, rate);
+    let runs = qualifying_runs(ref_vad, coarse, degraded.nominal_len, rate);
     if runs.is_empty() {
         return Err(PesqError::NoUtterancesFound);
     }
-    let windows = search_windows(ref_vad, coarse, degraded.nominal_len);
+    let windows = search_windows(ref_vad, coarse, degraded.nominal_len, rate);
 
     let mut utterances: Vec<UtteranceWork> = runs
         .iter()
         .zip(windows.iter())
         .map(|(&(start, end), &(search_start, search_end))| {
             let per_utterance =
-                coarse_delay_search(ref_vad, deg_vad, search_start, search_end, coarse);
+                coarse_delay_search(ref_vad, deg_vad, search_start, search_end, coarse, rate);
             let (fine, confidence) = fine_delay(
                 &reference.samples,
                 &degraded.samples,
@@ -61,6 +62,7 @@ pub fn align_utterances(
                 search_end,
                 per_utterance,
                 degraded.nominal_len,
+                rate,
             );
             UtteranceWork {
                 start,
@@ -75,7 +77,7 @@ pub fn align_utterances(
         .collect();
 
     merge_boundaries(&mut utterances, ref_vad.window_count);
-    clamp_boundaries(&mut utterances, degraded.nominal_len);
+    clamp_boundaries(&mut utterances, degraded.nominal_len, rate);
     split_utterances(&mut utterances, reference, degraded, ref_vad, deg_vad);
 
     Ok(utterances
@@ -109,39 +111,35 @@ fn merge_boundaries(utterances: &mut [UtteranceWork], window_count: usize) {
 }
 
 /// Delay clamps and overlap fix of spec 01 section 1.12 steps 3 to 5.
-fn clamp_boundaries(utterances: &mut [UtteranceWork], degraded_nominal: usize) {
+fn clamp_boundaries(utterances: &mut [UtteranceWork], degraded_nominal: usize, rate: Rate) {
+    let window = rate.window_samples() as i64;
+    let margin = rate.margin_samples() as i64;
     let Some(first) = utterances.first_mut() else {
         return;
     };
     // Step 3: left edge. The tested operand is start[0]*W, not
     // (start[0] - 75)*W (spec 01, 1.12 step 3): step 2 has just set
     // start[0] = 75, so the clamp triggers only when delay[0] < 0.
-    if first.start as i64 * WINDOW_SAMPLES as i64 + i64::from(first.fine) < MARGIN_SAMPLES as i64 {
-        first.start =
-            (75 + (WINDOW_SAMPLES as i32 - 1 - first.fine) / WINDOW_SAMPLES as i32) as usize;
+    if first.start as i64 * window + i64::from(first.fine) < margin {
+        first.start = (75 + (window as i32 - 1 - first.fine) / window as i32) as usize;
     }
     // Step 4: right edge.
     if let Some(last) = utterances.last_mut() {
-        if last.end as i64 * WINDOW_SAMPLES as i64 + i64::from(last.fine)
-            > degraded_nominal as i64 - MARGIN_SAMPLES as i64
-        {
-            let end = (degraded_nominal as i64 - i64::from(last.fine)) / WINDOW_SAMPLES as i64
-                - MARGIN_SAMPLES as i64 / WINDOW_SAMPLES as i64;
+        if last.end as i64 * window + i64::from(last.fine) > degraded_nominal as i64 - margin {
+            let end = (degraded_nominal as i64 - i64::from(last.fine)) / window - margin / window;
             last.end = end.max(0) as usize;
         }
     }
     // Step 5: overlap fix for adjacent pairs.
     for u in 1..utterances.len() {
-        let a = utterances[u].start as i64 * WINDOW_SAMPLES as i64 + i64::from(utterances[u].fine);
-        let b = utterances[u - 1].end as i64 * WINDOW_SAMPLES as i64
-            + i64::from(utterances[u - 1].fine);
+        let a = utterances[u].start as i64 * window + i64::from(utterances[u].fine);
+        let b = utterances[u - 1].end as i64 * window + i64::from(utterances[u - 1].fine);
         if a < b {
             let c = (a + b) / 2;
-            utterances[u].start = ((WINDOW_SAMPLES as i64 - 1 + c - i64::from(utterances[u].fine))
-                / WINDOW_SAMPLES as i64)
-                .max(0) as usize;
+            utterances[u].start =
+                ((window - 1 + c - i64::from(utterances[u].fine)) / window).max(0) as usize;
             utterances[u - 1].end =
-                ((c - i64::from(utterances[u - 1].fine)) / WINDOW_SAMPLES as i64).max(0) as usize;
+                ((c - i64::from(utterances[u - 1].fine)) / window).max(0) as usize;
         }
     }
 }
@@ -172,7 +170,8 @@ fn split_utterances(
         let (left_end, right_start) = if split.backward_delay < split.forward_delay {
             (split.breakpoint, split.breakpoint)
         } else {
-            let half = (split.backward_delay - split.forward_delay) / (2 * WINDOW_SAMPLES as i32);
+            let half = (split.backward_delay - split.forward_delay)
+                / (2 * reference.rate.window_samples() as i32);
             (
                 split.breakpoint + half as usize,
                 split.breakpoint.saturating_sub(half as usize),
@@ -197,15 +196,14 @@ fn split_utterances(
             confidence: split.backward_confidence,
         };
         // Step 10: clamps after splitting.
-        if (left.start as i64 - 75) * WINDOW_SAMPLES as i64 + i64::from(left.fine) < 0 {
-            left.start =
-                (75 + (WINDOW_SAMPLES as i32 - 1 - left.fine) / WINDOW_SAMPLES as i32) as usize;
+        let window = reference.rate.window_samples() as i64;
+        let margin = reference.rate.margin_samples() as i64;
+        if (left.start as i64 - 75) * window + i64::from(left.fine) < 0 {
+            left.start = (75 + (window as i32 - 1 - left.fine) / window as i32) as usize;
         }
-        if right.end as i64 * WINDOW_SAMPLES as i64 + i64::from(right.fine)
-            > degraded.nominal_len as i64 - MARGIN_SAMPLES as i64
+        if right.end as i64 * window + i64::from(right.fine) > degraded.nominal_len as i64 - margin
         {
-            let end =
-                (degraded.nominal_len as i64 - i64::from(right.fine)) / WINDOW_SAMPLES as i64 - 75;
+            let end = (degraded.nominal_len as i64 - i64::from(right.fine)) / window - 75;
             right.end = end.max(0) as usize;
         }
         utterances[u] = left;
@@ -231,23 +229,28 @@ fn split_utterances(
 /// toward zero (1.14 step 1); the reference implementation's floor()
 /// around the integer quotient is a no-op. Frame_stop itself is never
 /// skipped (1.14 step 3).
-pub fn negative_delay_skip_flags(utterances: &[Utterance], frame_stop: usize) -> Vec<bool> {
+pub fn negative_delay_skip_flags(
+    utterances: &[Utterance],
+    frame_stop: usize,
+    rate: Rate,
+) -> Vec<bool> {
+    let window = rate.window_samples() as i64;
+    let hop = rate.frame_hop() as i64;
     let mut flags = vec![false; frame_stop + 1];
     for pair in utterances.windows(2) {
         let j0 = i64::from(pair[0].fine_delay);
         let j1 = i64::from(pair[1].fine_delay);
         if j1 - j0 < -128 {
-            let mut f1 = ((pair[1].start_window as i64 - 75) * WINDOW_SAMPLES as i64 + j1) / 128;
-            let j = ((pair[0].end_window as i64 - 75) * WINDOW_SAMPLES as i64 + j0) / 128;
+            let mut f1 = ((pair[1].start_window as i64 - 75) * window + j1) / hop;
+            let j = ((pair[0].end_window as i64 - 75) * window + j0) / hop;
             if f1 > j {
                 f1 = j;
             }
             if f1 < 0 {
                 f1 = 0;
             }
-            let f2 = ((pair[1].start_window as i64 - 75) * WINDOW_SAMPLES as i64
-                + (j1 - j0).abs().max(0))
-                / 128
+            let f2 = ((pair[1].start_window as i64 - 75) * window + (j1 - j0).abs().max(0))
+                / hop
                 + 1;
             let last = f2.min(frame_stop as i64 - 1);
             for frame in f1..=last {

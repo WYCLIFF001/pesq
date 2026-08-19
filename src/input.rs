@@ -9,8 +9,8 @@
 //! [`crate::alignment`], and [`crate::utterances`].
 
 use crate::input_buffers::normalize_levels;
-use crate::input_filters::{apply_irs_receive, input_iir_filter, remove_dc};
-use crate::types::{PADDING_SAMPLES, PesqError, SignalBuffer, Utterance};
+use crate::input_filters::{apply_irs_receive, apply_wideband, input_iir_filter, remove_dc};
+use crate::types::{PesqError, SignalBuffer, Utterance};
 use crate::utterances::align_utterances;
 use crate::vad::voice_activity_detection;
 
@@ -122,14 +122,40 @@ impl AlignedPair {
 /// [`crate::utterances::negative_delay_skip_flags`] with the frame stop
 /// of the perceptual model.
 pub fn process_pair(
+    reference: SignalBuffer,
+    degraded: SignalBuffer,
+) -> Result<AlignedPair, PesqError> {
+    process_pair_mode(reference, degraded, false)
+}
+
+/// Run the input pipeline of spec 01 sections 1.2 to 1.13 in wideband
+/// mode: identical to [`process_pair`] except that the wideband input
+/// filter of spec 06 section 6.3 replaces the IRS receive filtering of
+/// spec 01 section 1.4. The buffers must be at the 16 kHz rate
+/// (spec 06, 6.2 item 2).
+pub fn process_pair_wideband(
+    reference: SignalBuffer,
+    degraded: SignalBuffer,
+) -> Result<AlignedPair, PesqError> {
+    process_pair_mode(reference, degraded, true)
+}
+
+/// The shared input pipeline of [`process_pair`] and
+/// [`process_pair_wideband`], selecting the model-copy input filter by
+/// mode (spec 06, 6.1).
+fn process_pair_mode(
     mut reference: SignalBuffer,
     mut degraded: SignalBuffer,
+    wideband: bool,
 ) -> Result<AlignedPair, PesqError> {
-    // 1.3: level normalization, then 1.4: IRS receive filtering and the
-    // saved model copies.
+    // 1.3: level normalization, then 1.4: input filtering and the saved
+    // model copies.
     normalize_levels(&mut reference, &mut degraded);
-    let (mut model_reference, mut model_degraded) =
-        apply_irs_receive(&mut reference, &mut degraded);
+    let (mut model_reference, mut model_degraded) = if wideband {
+        apply_wideband(&mut reference, &mut degraded)
+    } else {
+        apply_irs_receive(&mut reference, &mut degraded)
+    };
 
     // 1.5 and 1.6: DC removal and the input IIR filter on the working
     // buffers only; the model copies are untouched.
@@ -146,7 +172,7 @@ pub fn process_pair(
     // 1.7: extend the shorter saved buffer with zeros to Nmax + P.
     let n_max = reference.nominal_len.max(degraded.nominal_len);
     for model in [&mut model_reference, &mut model_degraded] {
-        model.samples.resize(n_max + PADDING_SAMPLES, 0.0);
+        model.samples.resize(n_max + reference.rate.padding_samples(), 0.0);
     }
 
     Ok(AlignedPair {
@@ -159,13 +185,13 @@ pub fn process_pair(
 /// Whole-signal coarse delay estimation of spec 01 section 1.9, see
 /// [`crate::alignment::coarse_delay_whole`].
 pub fn coarse_delay(reference: &crate::types::VadData, degraded: &crate::types::VadData) -> i32 {
-    crate::alignment::coarse_delay_whole(reference, degraded)
+    crate::alignment::coarse_delay_whole(reference, degraded, crate::types::RATE_8K)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::WINDOW_SAMPLES;
+    use crate::types::{PADDING_SAMPLES, WINDOW_SAMPLES};
 
     #[test]
     fn decimation_halves_the_rate_and_drops_a_trailing_odd_sample() {
@@ -285,7 +311,7 @@ mod tests {
         let (reference, degraded) = noise_pair(8000, 12000);
         let pair = process_pair(reference, degraded).unwrap();
         let n_max = pair.nominal_max();
-        assert_eq!(pair.reference.samples.len(), n_max + PADDING_SAMPLES);
+        assert_eq!(pair.reference.samples.len(), n_max + crate::types::PADDING_SAMPLES);
         assert_eq!(pair.degraded.samples.len(), n_max + PADDING_SAMPLES);
         assert!(!pair.utterances.is_empty());
         for utterance in &pair.utterances {

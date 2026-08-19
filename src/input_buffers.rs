@@ -7,7 +7,7 @@
 //! scaled so that the target mean power becomes 1e7.
 
 use crate::dsp::{ALIGNMENT_CURVE, apply_filter_curve};
-use crate::types::{MARGIN_SAMPLES, PADDING_SAMPLES, SignalBuffer};
+use crate::types::SignalBuffer;
 
 /// Level normalization of spec 01 section 1.3 for both signals.
 ///
@@ -22,7 +22,8 @@ use crate::types::{MARGIN_SAMPLES, PADDING_SAMPLES, SignalBuffer};
 /// signals with at least some content.
 pub fn normalize_levels(reference: &mut SignalBuffer, degraded: &mut SignalBuffer) {
     let n_max = reference.nominal_len.max(degraded.nominal_len);
-    let divisor = (n_max - 2 * MARGIN_SAMPLES + PADDING_SAMPLES) as f64;
+    let divisor = (n_max - 2 * reference.rate.margin_samples() + reference.rate.padding_samples())
+        as f64;
     normalize_one(reference, divisor);
     normalize_one(degraded, divisor);
 }
@@ -31,12 +32,12 @@ pub fn normalize_levels(reference: &mut SignalBuffer, degraded: &mut SignalBuffe
 pub(crate) fn normalize_one(buffer: &mut SignalBuffer, divisor: f64) {
     // Step 1: scratch copy, then step 2: the alignment filter.
     let mut scratch = buffer.samples.clone();
-    apply_filter_curve(&mut scratch, &ALIGNMENT_CURVE);
+    apply_filter_curve(&mut scratch, &ALIGNMENT_CURVE, buffer.rate);
 
-    // Step 3: mean power over [2400, N - 2400 + P) with the shared
+    // Step 3: mean power over [margin, N - margin + P) with the shared
     // divisor. The sum of squares accumulates in f64 (spec 01, 1.1).
-    let interval_start = MARGIN_SAMPLES;
-    let interval_end = buffer.nominal_len - MARGIN_SAMPLES + PADDING_SAMPLES;
+    let interval_start = buffer.rate.margin_samples();
+    let interval_end = buffer.nominal_len - interval_start + buffer.rate.padding_samples();
     let sum_squares: f64 = scratch[interval_start..interval_end]
         .iter()
         .map(|&sample| f64::from(sample * sample))
@@ -71,13 +72,15 @@ mod tests {
     /// shared divisor `Nmax - 4800 + P`.
     fn filtered_mean_power(buffer: &SignalBuffer, n_max: usize) -> f64 {
         let mut scratch = buffer.samples.clone();
-        apply_filter_curve(&mut scratch, &ALIGNMENT_CURVE);
-        let interval_end = buffer.nominal_len - MARGIN_SAMPLES + PADDING_SAMPLES;
-        let sum: f64 = scratch[MARGIN_SAMPLES..interval_end]
+        apply_filter_curve(&mut scratch, &ALIGNMENT_CURVE, buffer.rate);
+        let interval_start = buffer.rate.margin_samples();
+        let interval_end = buffer.nominal_len - interval_start + buffer.rate.padding_samples();
+        let sum: f64 = scratch[interval_start..interval_end]
             .iter()
             .map(|&sample| f64::from(sample * sample))
             .sum();
-        sum / (n_max - 2 * MARGIN_SAMPLES + PADDING_SAMPLES) as f64
+        let divisor = n_max - 2 * interval_start + buffer.rate.padding_samples();
+        sum / divisor as f64
     }
 
     #[test]
@@ -101,7 +104,11 @@ mod tests {
         let mut degraded = sine_buffer(3000.0, 880.0, 4000);
         normalize_levels(&mut reference, &mut degraded);
         for buffer in [&reference, &degraded] {
-            assert!(buffer.samples[..MARGIN_SAMPLES].iter().all(|&s| s == 0.0));
+            assert!(
+                buffer.samples[..buffer.rate.margin_samples()]
+                    .iter()
+                    .all(|&s| s == 0.0)
+            );
             assert!(
                 buffer.samples[buffer.nominal_len..]
                     .iter()
@@ -116,7 +123,7 @@ mod tests {
         // larger scale, because the divisor grows with Nmax while the
         // interval stays N - 4800 + P samples long (spec 01, 1.3 step 3).
         let signal = |len| sine_buffer(1500.0, 440.0, len);
-        let probe = MARGIN_SAMPLES + 2; // a nonzero sample of the 440 Hz sine
+        let probe = signal(4000).rate.margin_samples() + 2; // a nonzero sample of the 440 Hz sine
         let mut reference_a = signal(4000);
         let mut degraded_a = signal(4000);
         normalize_levels(&mut reference_a, &mut degraded_a);

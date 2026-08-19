@@ -1,7 +1,8 @@
 //! Disturbance densities, deadzone, and the two weighted frame norms
 //! (spec 04, sections 4.1 to 4.3).
 
-use crate::psychoacoustic::{NUM_BANDS, bark_width};
+use crate::psychoacoustic::bark_width;
+use crate::types::Rate;
 
 /// Remove the deadzone margin from one frame of loudness densities
 /// (spec 04, 4.1).
@@ -12,7 +13,7 @@ use crate::psychoacoustic::{NUM_BANDS, bark_width};
 /// by the margin toward zero. Band 0 is included (spec 04, 4.1), unlike
 /// the audibility sums of spec 03.
 pub(crate) fn deadzone_removed(loudness_ref: &[f32], loudness_deg: &[f32], out: &mut [f32]) {
-    for band in 0..NUM_BANDS {
+    for band in 0..out.len() {
         let margin = 0.25 * loudness_ref[band].min(loudness_deg[band]);
         let mut d = loudness_deg[band] - loudness_ref[band];
         if d > margin {
@@ -36,11 +37,11 @@ pub(crate) fn deadzone_removed(loudness_ref: &[f32], loudness_deg: &[f32], out: 
 ///
 /// The sums accumulate in f64 (spec 01, 1.1); callers store the result
 /// as f32.
-pub(crate) fn lp_norm(d: &[f32], p: f64) -> f64 {
+pub(crate) fn lp_norm(d: &[f32], p: f64, rate: Rate) -> f64 {
     let mut weighted = 0.0f64;
     let mut weight_sum = 0.0f64;
     for (band, &value) in d.iter().enumerate().skip(1) {
-        let w = f64::from(bark_width(band));
+        let w = f64::from(bark_width(band, rate));
         weighted += (f64::from(value.abs()) * w).powf(p);
         weight_sum += w;
     }

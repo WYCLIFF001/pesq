@@ -1,7 +1,6 @@
 //! Time weighting of long signals (spec 04, 4.7).
 
-use crate::psychoacoustic::FRAME_HOP;
-use crate::types::MARGIN_SAMPLES;
+use crate::types::Rate;
 
 use super::LONG_SIGNAL_FRAME_COUNT;
 
@@ -13,12 +12,12 @@ use super::LONG_SIGNAL_FRAME_COUNT;
 /// `f = (n - 1000)/5500` capped at 0.5, the weight of frame `frame` is
 /// `(1 - f) + f * frame / n`: frames later in a long signal are
 /// weighted more heavily.
-pub(crate) fn time_weights(frame_stop: usize, n_max: usize) -> Vec<f32> {
+pub(crate) fn time_weights(frame_stop: usize, n_max: usize, rate: Rate) -> Vec<f32> {
     let mut weights = vec![1.0f32; frame_stop + 1];
     if frame_stop < LONG_SIGNAL_FRAME_COUNT {
         return weights;
     }
-    let n = ((n_max - 2 * MARGIN_SAMPLES) / FRAME_HOP) - 1;
+    let n = ((n_max - 2 * rate.margin_samples()) / rate.frame_hop()) - 1;
     let f = ((n as f64 - 1000.0) / 5500.0).min(0.5);
     let n = n as f64;
     for (frame, weight) in weights.iter_mut().enumerate() {

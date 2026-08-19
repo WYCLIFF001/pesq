@@ -9,23 +9,28 @@
 
 use crate::alignment::coarse_correlation;
 use crate::dsp::{hann_window, spectral_cross_correlate};
-use crate::types::{ALIGN_FFT_LEN, SignalBuffer, VadData, WINDOW_SAMPLES};
+use crate::types::{Rate, SignalBuffer, VadData};
 use crate::utterances::UtteranceWork;
 
 /// Minimum speech length in windows for a split attempt (spec 01, 1.13
 /// step 2).
 const MIN_SPLIT_SPEECH_WINDOWS: usize = 200;
 
-/// Breakpoint grid spacing D = A/(4*W) (spec 01, 1.13 step 3).
-const SPLIT_GRID_STEP: usize = 4;
-
 /// Maximum number of split candidates (spec 01, 1.13 step 3).
 const SPLIT_MAX_CANDIDATES: usize = 40;
+
+/// Breakpoint grid spacing D = A/(4*W) (spec 01, 1.13 step 3): 4 at
+/// both rates.
+fn split_grid_step(rate: Rate) -> usize {
+    rate.align_fft_len() / (4 * rate.window_samples())
+}
 
 /// Scratch offset of the split-pass window region, 3A + 6 floats from
 /// the scratch base (spec 01, 1.13.1). Step-4 correlation outputs that
 /// reach past this offset overwrite the window coefficients there.
-const SCRATCH_WINDOW_OFFSET: usize = 3 * ALIGN_FFT_LEN + 6;
+fn scratch_window_offset(rate: Rate) -> usize {
+    3 * rate.align_fft_len() + 6
+}
 
 /// A split accepted by the rules of spec 01 section 1.13 step 8.
 pub(crate) struct Split {
@@ -51,6 +56,8 @@ pub(crate) fn best_split(
     ref_vad: &VadData,
     deg_vad: &VadData,
 ) -> Option<Split> {
+    let rate = reference.rate;
+    let window_samples = rate.window_samples();
     let (start, end) = (work.start, work.end);
     let (coarse, utterance_confidence) = (work.coarse, work.confidence);
     // Steps 1 and 2: the speech extent, trimmed of zero-energy windows.
@@ -69,10 +76,11 @@ pub(crate) fn best_split(
     }
 
     // Step 3: the breakpoint grid.
-    let step = (((0.801 * speech_length as f64 + 40.0 * SPLIT_GRID_STEP as f64 - 1.0)
-        / (40.0 * SPLIT_GRID_STEP as f64))
+    let grid = split_grid_step(rate);
+    let step = (((0.801 * speech_length as f64 + 40.0 * grid as f64 - 1.0)
+        / (40.0 * grid as f64))
         .floor() as usize)
-        * SPLIT_GRID_STEP;
+        * grid;
     let pad = (speech_length / 10).max(75);
     let mut candidates = Vec::new();
     let mut breakpoint = speech_start + pad;
@@ -91,20 +99,20 @@ pub(crate) fn best_split(
     // Hann fill runs once per split attempt, and every correlation that
     // runs overwrites the window coefficients its output reaches, in
     // call order.
-    let mut effective_window = hann_window(ALIGN_FFT_LEN);
+    let mut effective_window = hann_window(rate.align_fft_len());
     let mut left_estimates = Vec::with_capacity(candidates.len());
     let mut right_estimates = Vec::with_capacity(candidates.len());
     for &candidate in &candidates {
-        match coarse_correlation(ref_vad, deg_vad, start, candidate, coarse) {
+        match coarse_correlation(ref_vad, deg_vad, start, candidate, coarse, rate) {
             Some((estimate, correlation)) => {
-                corrupt_window(&mut effective_window, &correlation);
+                corrupt_window(&mut effective_window, &correlation, rate);
                 left_estimates.push(estimate);
             }
             None => left_estimates.push(coarse),
         }
-        match coarse_correlation(ref_vad, deg_vad, candidate, end, coarse) {
+        match coarse_correlation(ref_vad, deg_vad, candidate, end, coarse, rate) {
             Some((estimate, correlation)) => {
-                corrupt_window(&mut effective_window, &correlation);
+                corrupt_window(&mut effective_window, &correlation, rate);
                 right_estimates.push(estimate);
             }
             None => right_estimates.push(coarse),
@@ -128,10 +136,10 @@ pub(crate) fn best_split(
     while i < count {
         let seed = left_estimates[i];
         let mut pass =
-            SplitAccumulator::new(reference, degraded, start, seed, false, &effective_window);
+            SplitAccumulator::new(reference, degraded, start, seed, false, &effective_window, rate);
         let mut j = i;
         while j < count {
-            pass.advance_to(candidates[j] as i64 * WINDOW_SAMPLES as i64);
+            pass.advance_to(candidates[j] as i64 * window_samples as i64);
             if left_estimates[j] == seed {
                 let (delay, confidence) = pass.record(seed);
                 forward_delay[j] = delay;
@@ -171,10 +179,10 @@ pub(crate) fn best_split(
         };
         let seed = right_estimates[start_index];
         let mut pass =
-            SplitAccumulator::new(reference, degraded, end, seed, true, &effective_window);
+            SplitAccumulator::new(reference, degraded, end, seed, true, &effective_window, rate);
         let mut k = start_index;
         loop {
-            pass.advance_to(candidates[k] as i64 * WINDOW_SAMPLES as i64);
+            pass.advance_to(candidates[k] as i64 * window_samples as i64);
             if right_estimates[k] == seed
                 && !computed[k]
                 && forward_confidence[k] > utterance_confidence
@@ -198,7 +206,7 @@ pub(crate) fn best_split(
     let mut best_sum = 0.0f32;
     for i in 0..count {
         let (fd, bd) = (forward_delay[i], backward_delay[i]);
-        if (fd - bd).abs() >= WINDOW_SAMPLES as i32
+        if (fd - bd).abs() >= window_samples as i32
             && forward_confidence[i] > utterance_confidence
             && backward_confidence[i] > utterance_confidence
         {
@@ -233,6 +241,7 @@ struct SplitAccumulator<'a> {
     reference: &'a [f32],
     degraded: &'a [f32],
     degraded_nominal: usize,
+    rate: Rate,
     ref_cursor: i64,
     deg_cursor: i64,
     backward: bool,
@@ -266,34 +275,39 @@ impl<'a> SplitAccumulator<'a> {
         seed: i32,
         backward: bool,
         window: &[f32],
+        rate: Rate,
     ) -> Self {
+        let window_samples = rate.window_samples() as i64;
+        let align_fft_len = rate.align_fft_len() as i64;
         let mut ref_cursor = if backward {
-            boundary as i64 * WINDOW_SAMPLES as i64 - ALIGN_FFT_LEN as i64
+            boundary as i64 * window_samples - align_fft_len
         } else {
-            boundary as i64 * WINDOW_SAMPLES as i64
+            boundary as i64 * window_samples
         };
         let mut deg_cursor = ref_cursor + i64::from(seed);
         if backward {
-            if deg_cursor + ALIGN_FFT_LEN as i64 > degraded.nominal_len as i64 {
-                deg_cursor = degraded.nominal_len as i64 - ALIGN_FFT_LEN as i64;
+            if deg_cursor + align_fft_len > degraded.nominal_len as i64 {
+                deg_cursor = degraded.nominal_len as i64 - align_fft_len;
                 ref_cursor = deg_cursor - i64::from(seed);
             }
         } else if deg_cursor < 0 {
             ref_cursor = i64::from(-seed);
             deg_cursor = 0;
         }
+        let align = rate.align_fft_len();
         Self {
             reference: &reference.samples,
             degraded: &degraded.samples,
             degraded_nominal: degraded.nominal_len,
+            rate,
             ref_cursor,
             deg_cursor,
             backward,
             window: window.to_vec(),
-            histogram: vec![0.0f32; ALIGN_FFT_LEN],
+            histogram: vec![0.0f32; align],
             hsum: 0.0,
-            frame_ref: vec![0.0f32; ALIGN_FFT_LEN],
-            frame_deg: vec![0.0f32; ALIGN_FFT_LEN],
+            frame_ref: vec![0.0f32; align],
+            frame_deg: vec![0.0f32; align],
         }
     }
 }
@@ -308,18 +322,20 @@ impl SplitAccumulator<'_> {
     /// each frame spreads its peaks per 1.13 step 6.
     fn advance_to(&mut self, candidate_samples: i64) {
         loop {
+            let align = self.rate.align_fft_len() as i64;
             let in_range = if self.backward {
                 self.deg_cursor >= 0 && self.ref_cursor >= candidate_samples
             } else {
-                self.deg_cursor + ALIGN_FFT_LEN as i64 <= self.degraded_nominal as i64
-                    && self.ref_cursor + ALIGN_FFT_LEN as i64 <= candidate_samples
+                self.deg_cursor + align <= self.degraded_nominal as i64
+                    && self.ref_cursor + align <= candidate_samples
             };
             if !in_range {
                 return;
             }
+            let align = self.rate.align_fft_len();
             let ref_start = self.ref_cursor as usize;
             let deg_start = self.deg_cursor as usize;
-            for i in 0..ALIGN_FFT_LEN {
+            for i in 0..align {
                 self.frame_ref[i] = self.window[i] * self.reference[ref_start + i];
                 self.frame_deg[i] = self.window[i] * self.degraded[deg_start + i];
             }
@@ -333,18 +349,21 @@ impl SplitAccumulator<'_> {
                 .iter()
                 .map(|value| value.abs())
                 .fold(0.0f32, f32::max);
+            // The spreading radius K = A/64 (spec 01, 1.13 step 6).
+            let radius = (self.rate.align_fft_len() / 64) as i32;
             let v = 0.99 * peak;
-            let unit = v.powf(0.125) / 8.0;
+            let unit = v.powf(0.125) / radius as f32;
             for (lag, &value) in spectrum.iter().enumerate() {
                 if value.abs() > v {
-                    for k in -7..=7i32 {
-                        let index = (lag as i32 + k).rem_euclid(ALIGN_FFT_LEN as i32) as usize;
-                        self.histogram[index] += unit * (8 - k.unsigned_abs()) as f32;
+                    for k in -(radius - 1)..=radius - 1 {
+                        let index =
+                            (lag as i32 + k).rem_euclid(self.rate.align_fft_len() as i32) as usize;
+                        self.histogram[index] += unit * (radius - k.unsigned_abs() as i32) as f32;
                     }
                     self.hsum += f64::from(v.powf(0.125));
                 }
             }
-            let step = ALIGN_FFT_LEN as i64 / 4;
+            let step = self.rate.align_fft_len() as i64 / 4;
             if self.backward {
                 self.ref_cursor -= step;
                 self.deg_cursor -= step;
@@ -369,8 +388,9 @@ impl SplitAccumulator<'_> {
                 peak_index = lag;
             }
         }
-        let folded = if peak_index >= ALIGN_FFT_LEN / 2 {
-            peak_index as i32 - ALIGN_FFT_LEN as i32
+        let align = self.rate.align_fft_len();
+        let folded = if peak_index >= align / 2 {
+            peak_index as i32 - align as i32
         } else {
             peak_index as i32
         };
@@ -392,14 +412,15 @@ impl SplitAccumulator<'_> {
 /// replaces the Hann coefficient there. Later correlations overwrite
 /// again, so the writes must be applied in call order (candidate order,
 /// left estimate then right estimate per candidate).
-fn corrupt_window(window: &mut [f32], correlation: &[f32]) {
-    if correlation.len() <= SCRATCH_WINDOW_OFFSET {
+fn corrupt_window(window: &mut [f32], correlation: &[f32], rate: Rate) {
+    let offset = scratch_window_offset(rate);
+    if correlation.len() <= offset {
         return;
     }
-    let reach = (correlation.len() - SCRATCH_WINDOW_OFFSET).min(window.len());
+    let reach = (correlation.len() - offset).min(window.len());
     for (slot, &value) in window[..reach]
         .iter_mut()
-        .zip(&correlation[SCRATCH_WINDOW_OFFSET..])
+        .zip(&correlation[offset..])
     {
         *slot = value;
     }

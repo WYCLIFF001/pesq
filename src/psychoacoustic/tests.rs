@@ -2,7 +2,7 @@
 
 use super::table::{BARK_BANDS, LOUDNESS_SCALE, PITCH_POWER_SCALE};
 use super::*;
-use crate::types::Utterance;
+use crate::types::{RATE_8K, Utterance};
 
 fn utterance(start_window: usize, fine_delay: i32) -> Utterance {
     Utterance {
@@ -41,7 +41,7 @@ fn bark_warping_of_a_flat_spectrum_scales_by_group_and_factor() {
     // density[b] = power * n[b] * c[b] * Sp (spec 03, 3.3 steps 1 to 3).
     // The grouping consumes all 128 bins starting at bin 0.
     let power = [10_000.0f64; NUM_POWER_BINS];
-    let density = warp_to_bark(&power);
+    let density = warp_to_bark(&power, RATE_8K);
     for (band, row) in BARK_BANDS.iter().enumerate() {
         let expected = 10_000.0 * row.bins as f64 * f64::from(row.correction) * PITCH_POWER_SCALE;
         assert!(
@@ -58,7 +58,7 @@ fn bark_warping_groups_from_bin_0() {
     // with every other bin silent only band 0 can carry density.
     let mut power = [0.0f64; NUM_POWER_BINS];
     power[0] = 1000.0;
-    let density = warp_to_bark(&power);
+    let density = warp_to_bark(&power, RATE_8K);
     let expected = 1000.0 * f64::from(BARK_BANDS[0].correction) * PITCH_POWER_SCALE;
     assert!((f64::from(density[0]) - expected).abs() <= expected * 1e-6);
     assert!(density[1..].iter().all(|&d| d == 0.0));
@@ -76,20 +76,20 @@ fn loudness_follows_the_zwicker_power_law() {
         let expected = LOUDNESS_SCALE
             * (threshold / 0.5).powf(0.23)
             * ((0.5 + 0.5 * f64::from(p) / threshold).powf(0.23) - 1.0);
-        let loudness = f64::from(zwicker_loudness(p, band));
+        let loudness = f64::from(zwicker_loudness(p, band, RATE_8K));
         assert!(
             (loudness - expected).abs() <= expected.abs() * 1e-6,
             "p = {p}"
         );
     }
     // At or below the threshold the loudness is zero (step 3).
-    assert_eq!(zwicker_loudness(BARK_BANDS[band].threshold, band), 0.0);
+    assert_eq!(zwicker_loudness(BARK_BANDS[band].threshold, band, RATE_8K), 0.0);
     assert_eq!(
-        zwicker_loudness(0.5 * BARK_BANDS[band].threshold, band),
+        zwicker_loudness(0.5 * BARK_BANDS[band].threshold, band, RATE_8K),
         0.0
     );
     // And it grows monotonically with the input density.
-    assert!(zwicker_loudness(2.0, band) > zwicker_loudness(1.0, band));
+    assert!(zwicker_loudness(2.0, band, RATE_8K) > zwicker_loudness(1.0, band, RATE_8K));
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn loudness_applies_the_low_bark_correction_below_4_bark() {
     let expected = LOUDNESS_SCALE
         * (threshold / 0.5).powf(0.23 * h)
         * ((0.5 + 0.5 * f64::from(p) / threshold).powf(0.23 * h) - 1.0);
-    assert!((f64::from(zwicker_loudness(p, band)) - expected).abs() <= expected * 1e-6);
+    assert!((f64::from(zwicker_loudness(p, band, RATE_8K)) - expected).abs() <= expected * 1e-6);
     // Band 0 (0.079 Bark): 6 / (bark + 2) exceeds 2, so the cap binds
     // and h = 2^0.15.
     let band = 0;
@@ -114,7 +114,7 @@ fn loudness_applies_the_low_bark_correction_below_4_bark() {
     let expected = LOUDNESS_SCALE
         * (threshold / 0.5).powf(0.23 * h)
         * ((0.5 + 0.5 * f64::from(p) / threshold).powf(0.23 * h) - 1.0);
-    assert!((f64::from(zwicker_loudness(p, band)) - expected).abs() <= expected * 1e-6);
+    assert!((f64::from(zwicker_loudness(p, band, RATE_8K)) - expected).abs() <= expected * 1e-6);
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn audible_power_applies_the_threshold_and_excludes_band_0() {
             expected += f64::from(density[band]);
         }
     }
-    assert!((audible_power(&density, factor) - expected).abs() <= expected * 1e-6);
+    assert!((audible_power(&density, factor, RATE_8K) - expected).abs() <= expected * 1e-6);
 }
 
 #[test]
@@ -144,9 +144,9 @@ fn silence_flag_uses_factor_100_and_power_1e7() {
     let band = 20;
     let mut density = [0.0f32; NUM_BANDS];
     density[band] = (100.0 * f64::from(BARK_BANDS[band].threshold)) as f32;
-    assert!(audible_power(&density, SILENCE_FLAG_FACTOR) < SILENCE_FLAG_POWER);
+    assert!(audible_power(&density, SILENCE_FLAG_FACTOR, RATE_8K) < SILENCE_FLAG_POWER);
     density[band] = (100.0 * f64::from(BARK_BANDS[band].threshold) + SILENCE_FLAG_POWER) as f32;
-    assert!(audible_power(&density, SILENCE_FLAG_FACTOR) > SILENCE_FLAG_POWER);
+    assert!(audible_power(&density, SILENCE_FLAG_FACTOR, RATE_8K) > SILENCE_FLAG_POWER);
 }
 
 #[test]
@@ -202,10 +202,10 @@ fn governing_delay_uses_the_last_utterance_before_the_frame() {
         utterance(80, 300),  // 80 * 32 = 2560 samples
         utterance(200, -50), // 200 * 32 = 6400 samples
     ];
-    assert_eq!(governing_delay(2400, &utterances), 100);
-    assert_eq!(governing_delay(2600, &utterances), 300);
-    assert_eq!(governing_delay(7000, &utterances), -50);
-    assert_eq!(governing_delay(2400, &[]), 0);
+    assert_eq!(governing_delay(2400, &utterances, RATE_8K), 100);
+    assert_eq!(governing_delay(2600, &utterances, RATE_8K), 300);
+    assert_eq!(governing_delay(7000, &utterances, RATE_8K), -50);
+    assert_eq!(governing_delay(2400, &[], RATE_8K), 0);
 }
 
 #[test]

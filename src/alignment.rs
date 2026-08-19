@@ -8,42 +8,50 @@
 //! per-utterance alignment passes.
 
 use crate::dsp::{circular_convolve, correlate, hann_window, spectral_cross_correlate};
-use crate::types::{ALIGN_FFT_LEN, VadData, WINDOW_SAMPLES};
+use crate::types::{RATE_8K, RATE_16K, Rate, VadData};
 
-/// Fine-alignment frame advance, A/4 samples (spec 01, 1.10 step 4e).
 /// Triangular smoothing kernel of spec 01 section 1.10 step 5, computed
-/// once per process: kernel[0] = 1 and kernel[k] = kernel[A - k] =
-/// 1 - k/K for k = 1..=K-1, zeros elsewhere.
-fn smooth_kernel() -> &'static [f32] {
+/// once per rate: kernel[0] = 1 and kernel[k] = kernel[A - k] =
+/// 1 - k/K for k = 1..=K-1, zeros elsewhere, with radius K = A/64
+/// (spec 01, 1.10 step 5).
+fn smooth_kernel(rate: Rate) -> &'static [f32] {
     use std::sync::OnceLock;
-    static KERNEL: OnceLock<Vec<f32>> = OnceLock::new();
-    KERNEL.get_or_init(|| {
-        let mut kernel = vec![0.0f32; ALIGN_FFT_LEN];
+    static KERNEL_8K: OnceLock<Vec<f32>> = OnceLock::new();
+    static KERNEL_16K: OnceLock<Vec<f32>> = OnceLock::new();
+    let slot = match rate {
+        RATE_8K => &KERNEL_8K,
+        RATE_16K => &KERNEL_16K,
+    };
+    slot.get_or_init(|| {
+        let align_fft_len = rate.align_fft_len();
+        let radius = align_fft_len / 64;
+        let mut kernel = vec![0.0f32; align_fft_len];
         kernel[0] = 1.0;
-        for k in 1..SMOOTH_RADIUS {
-            let value = 1.0 - k as f32 / SMOOTH_RADIUS as f32;
+        for k in 1..radius {
+            let value = 1.0 - k as f32 / radius as f32;
             kernel[k] = value;
-            kernel[ALIGN_FFT_LEN - k] = value;
+            kernel[align_fft_len - k] = value;
         }
         kernel
     })
 }
-const FINE_ADVANCE: usize = ALIGN_FFT_LEN / 4;
 
-/// Histogram smoothing radius K = A/64 (spec 01, 1.10 step 5).
-const SMOOTH_RADIUS: usize = ALIGN_FFT_LEN / 64;
+/// Fine-alignment frame advance, A/4 samples (spec 01, 1.10 step 4e).
+fn fine_advance(rate: Rate) -> usize {
+    rate.align_fft_len() / 4
+}
 
 /// Whole-signal coarse delay estimation of spec 01 section 1.9 steps 1
 /// to 6: the FFT cross-correlation of the two log-VAD arrays, the strict
 /// maximizer starting from value 0 at index Vr - 1, and the conversion
 /// to samples.
-pub fn coarse_delay_whole(reference: &VadData, degraded: &VadData) -> i32 {
+pub fn coarse_delay_whole(reference: &VadData, degraded: &VadData, rate: Rate) -> i32 {
     let x = &reference.log_vad;
     let y = &degraded.log_vad;
     if x.len() <= 1 || y.len() <= 1 {
         return 0;
     }
-    lag_from_correlation(&correlate(x, y), x.len())
+    lag_from_correlation(&correlate(x, y), x.len(), rate.window_samples())
 }
 
 /// Per-utterance coarse estimate of spec 01 section 1.9 step 7, seeded
@@ -56,8 +64,9 @@ pub fn coarse_delay_search(
     s0: usize,
     s1: usize,
     seed: i32,
+    rate: Rate,
 ) -> i32 {
-    match coarse_correlation(reference, degraded, s0, s1, seed) {
+    match coarse_correlation(reference, degraded, s0, s1, seed, rate) {
         Some((estimate, _)) => estimate,
         None => seed,
     }
@@ -76,13 +85,15 @@ pub fn fine_delay(
     s1: usize,
     d0: i32,
     degraded_nominal: usize,
+    rate: Rate,
 ) -> (i32, f32) {
-    let window = hann_window(ALIGN_FFT_LEN);
-    let mut histogram = vec![0.0f32; ALIGN_FFT_LEN];
+    let align_fft_len = rate.align_fft_len();
+    let window = hann_window(align_fft_len);
+    let mut histogram = vec![0.0f32; align_fft_len];
 
     // Step 3: the cursors, with the negative-degraded-cursor clamp that
     // replaces (not adds to) the reference cursor.
-    let mut ref_cursor = (s0 * WINDOW_SAMPLES) as i64;
+    let mut ref_cursor = (s0 * rate.window_samples()) as i64;
     let mut deg_cursor = ref_cursor + i64::from(d0);
     if deg_cursor < 0 {
         ref_cursor = i64::from(-d0);
@@ -94,14 +105,14 @@ pub fn fine_delay(
     // the correlation; v is 0.99 times the maximum of those absolute
     // values, and every lag whose absolute value exceeds v votes
     // (step 4d).
-    let mut frame_ref = vec![0.0f32; ALIGN_FFT_LEN];
-    let mut frame_deg = vec![0.0f32; ALIGN_FFT_LEN];
-    while deg_cursor + ALIGN_FFT_LEN as i64 <= degraded_nominal as i64
-        && ref_cursor + ALIGN_FFT_LEN as i64 <= (s1 * WINDOW_SAMPLES) as i64
+    let mut frame_ref = vec![0.0f32; align_fft_len];
+    let mut frame_deg = vec![0.0f32; align_fft_len];
+    while deg_cursor + align_fft_len as i64 <= degraded_nominal as i64
+        && ref_cursor + align_fft_len as i64 <= (s1 * rate.window_samples()) as i64
     {
         let ref_start = ref_cursor as usize;
         let deg_start = deg_cursor as usize;
-        for i in 0..ALIGN_FFT_LEN {
+        for i in 0..align_fft_len {
             frame_ref[i] = window[i] * reference[ref_start + i];
             frame_deg[i] = window[i] * degraded[deg_start + i];
         }
@@ -117,8 +128,8 @@ pub fn fine_delay(
                 histogram[lag] += weight;
             }
         }
-        ref_cursor += FINE_ADVANCE as i64;
-        deg_cursor += FINE_ADVANCE as i64;
+        ref_cursor += fine_advance(rate) as i64;
+        deg_cursor += fine_advance(rate) as i64;
     }
 
     // Step 6 before step 5: the normalization divisor Hsum is the sum of
@@ -128,7 +139,7 @@ pub fn fine_delay(
     // Step 5: circular smoothing with the triangular kernel of radius
     // K = 8: kernel[0] = 1 and kernel[k] = kernel[A - k] = 1 - k/8 for
     // k = 1..=7. The kernel is a constant, computed once per process.
-    histogram = circular_convolve(&histogram, smooth_kernel());
+    histogram = circular_convolve(&histogram, smooth_kernel(rate));
 
     // Step 6: divide the smoothed histogram by the raw sum.
     if raw_sum > 0.0 {
@@ -150,8 +161,8 @@ pub fn fine_delay(
             peak_index = lag;
         }
     }
-    let folded = if peak_index >= ALIGN_FFT_LEN / 2 {
-        peak_index as i32 - ALIGN_FFT_LEN as i32
+    let folded = if peak_index >= align_fft_len / 2 {
+        peak_index as i32 - align_fft_len as i32
     } else {
         peak_index as i32
     };
@@ -160,9 +171,9 @@ pub fn fine_delay(
 
 /// Lag conversion of spec 01 section 1.9 step 5 for a correlation
 /// output whose first sequence had `vr` elements.
-fn lag_from_correlation(correlation: &[f32], vr: usize) -> i32 {
+fn lag_from_correlation(correlation: &[f32], vr: usize, window_samples: usize) -> i32 {
     let (best_index, _) = maximizer(correlation, vr - 1);
-    (best_index as i32 - vr as i32 + 1) * WINDOW_SAMPLES as i32
+    (best_index as i32 - vr as i32 + 1) * window_samples as i32
 }
 
 /// Strict maximizer of spec 01 section 1.9 step 4: starts with value 0
@@ -186,9 +197,10 @@ pub fn search_windows(
     reference: &VadData,
     coarse_delay: i32,
     degraded_nominal: usize,
+    rate: Rate,
 ) -> Vec<(usize, usize)> {
     let last = reference.window_count - 1;
-    qualifying_runs(reference, coarse_delay, degraded_nominal)
+    qualifying_runs(reference, coarse_delay, degraded_nominal, rate)
         .into_iter()
         .map(|(a, c)| (a.saturating_sub(75), (c + 75).min(last)))
         .collect()
@@ -203,8 +215,9 @@ pub fn qualifying_runs(
     reference: &VadData,
     coarse_delay: i32,
     degraded_nominal: usize,
+    rate: Rate,
 ) -> Vec<(usize, usize)> {
-    let window_divisor = WINDOW_SAMPLES as i32;
+    let window_divisor = rate.window_samples() as i32;
     let b1 = 50 - coarse_delay / window_divisor;
     let b2 = (degraded_nominal as i32 - coarse_delay) / window_divisor - 50;
     let last = reference.window_count - 1;
@@ -251,8 +264,9 @@ pub(crate) fn coarse_correlation(
     s0: usize,
     s1: usize,
     seed: i32,
+    rate: Rate,
 ) -> Option<(i32, Vec<f32>)> {
-    let window_divisor = WINDOW_SAMPLES as i32;
+    let window_divisor = rate.window_samples() as i32;
     let mut s0 = s0;
     let mut sd = s0 as i32 + seed / window_divisor;
     if sd < 0 {
@@ -283,7 +297,7 @@ pub(crate) fn coarse_correlation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::SignalBuffer;
+    use crate::types::{RATE_8K, WINDOW_SAMPLES, SignalBuffer};
 
     /// VAD data with one burst of `run` speech windows starting at
     /// `onset`, inside `total` windows.
@@ -312,14 +326,14 @@ mod tests {
         let shift = 6usize;
         let reference = vad_with_burst(total, 100, 40);
         let degraded = vad_with_burst(total, 100 + shift, 40);
-        let lag = coarse_delay_whole(&reference, &degraded);
+        let lag = coarse_delay_whole(&reference, &degraded, RATE_8K);
         assert_eq!(lag, shift as i32 * WINDOW_SAMPLES as i32);
     }
 
     #[test]
     fn coarse_delay_is_zero_for_single_window_vad() {
         let tiny = vad_with_burst(1, 0, 1);
-        assert_eq!(coarse_delay_whole(&tiny, &tiny), 0);
+        assert_eq!(coarse_delay_whole(&tiny, &tiny, RATE_8K), 0);
     }
 
     #[test]
@@ -327,7 +341,7 @@ mod tests {
         let total = 400usize;
         let reference = vad_with_burst(total, 100, 40);
         let degraded = vad_with_burst(total, 106, 40);
-        let estimate = coarse_delay_search(&reference, &degraded, 25, 235, 0);
+        let estimate = coarse_delay_search(&reference, &degraded, 25, 235, 0, RATE_8K);
         assert_eq!(estimate, 6 * WINDOW_SAMPLES as i32);
     }
 
@@ -335,7 +349,7 @@ mod tests {
     fn per_utterance_coarse_returns_the_seed_for_tiny_windows() {
         let reference = vad_with_burst(400, 100, 40);
         let degraded = vad_with_burst(400, 100, 40);
-        assert_eq!(coarse_delay_search(&reference, &degraded, 100, 101, 17), 17);
+        assert_eq!(coarse_delay_search(&reference, &degraded, 100, 101, 17, RATE_8K), 17);
     }
 
     /// A working-buffer pair where the degraded signal is the reference
@@ -369,6 +383,7 @@ mod tests {
             reference.nominal_len / WINDOW_SAMPLES - 75,
             0,
             degraded.nominal_len,
+            RATE_8K,
         );
         assert_eq!(delay, 64);
         assert!(confidence > 0.0);
@@ -384,6 +399,7 @@ mod tests {
             reference.nominal_len / WINDOW_SAMPLES - 75,
             0,
             reference.nominal_len,
+            RATE_8K,
         );
         assert_eq!(delay, 0);
         assert!(confidence > 0.0);
@@ -402,6 +418,7 @@ mod tests {
             reference.nominal_len / WINDOW_SAMPLES - 75,
             0,
             WINDOW_SAMPLES,
+            RATE_8K,
         );
         assert_eq!(delay, 0);
         assert_eq!(confidence, 0.0);
@@ -415,14 +432,14 @@ mod tests {
         for e in vad.energy[300..360].iter_mut() {
             *e = 1.0;
         }
-        let windows = search_windows(&vad, 0, 400 * WINDOW_SAMPLES);
+        let windows = search_windows(&vad, 0, 400 * WINDOW_SAMPLES, RATE_8K);
         assert_eq!(windows, vec![(25, 235), (225, 399)]);
     }
 
     #[test]
     fn search_windows_reject_short_runs() {
         let vad = vad_with_burst(400, 100, 49);
-        assert!(search_windows(&vad, 0, 400 * WINDOW_SAMPLES).is_empty());
+        assert!(search_windows(&vad, 0, 400 * WINDOW_SAMPLES, RATE_8K).is_empty());
     }
 
     #[test]
@@ -431,8 +448,8 @@ mod tests {
         // at index Vr - 1, so with no positive correlation value the
         // fallback is k = Vr - 1, i.e. lag 0 (not +W).
         let negative = [-1.0f32, -2.0, -3.0];
-        assert_eq!(lag_from_correlation(&negative, 4), 0);
+        assert_eq!(lag_from_correlation(&negative, 4, WINDOW_SAMPLES), 0);
         let zeros = [0.0f32; 9];
-        assert_eq!(lag_from_correlation(&zeros, 4), 0);
+        assert_eq!(lag_from_correlation(&zeros, 4, WINDOW_SAMPLES), 0);
     }
 }

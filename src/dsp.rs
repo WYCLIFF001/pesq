@@ -11,5 +11,6 @@ pub use crate::dsp_fft::{
     circular_convolve, correlate, hann_window, inverse_real_fft, real_fft, spectral_cross_correlate,
 };
 pub use crate::dsp_filters::{
-    ALIGNMENT_CURVE, Curve, IIR_SECTIONS, IRS_RECEIVE_CURVE, apply_filter_curve, apply_input_iir,
+    ALIGNMENT_CURVE, Curve, IIR_SECTIONS, IIR_SECTIONS_16K, IRS_RECEIVE_CURVE, apply_filter_curve,
+    apply_input_iir,
 };

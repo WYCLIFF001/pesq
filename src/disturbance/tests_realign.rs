@@ -3,7 +3,7 @@
 
 use super::bad_intervals::{interval_delay, realign};
 use crate::psychoacoustic::{NUM_BANDS, PerceptualModel};
-use crate::types::{PADDING_SAMPLES, SignalBuffer};
+use crate::types::{PADDING_SAMPLES, RATE_8K, SignalBuffer};
 
 /// A pseudo-random burst in [-1, 1) over a sample range, for the
 /// re-alignment tests.
@@ -25,6 +25,7 @@ fn interval_reference() -> SignalBuffer {
         samples,
         nominal_len: 12800,
         input_len: 8000,
+        rate: RATE_8K,
     }
 }
 
@@ -36,7 +37,7 @@ fn interval_delay_finds_a_positive_shift() {
     let mut realigned = vec![0.0f32; reference.samples.len()];
     let len = realigned.len();
     realigned[2400..len - 2400].copy_from_slice(&reference.samples[2400 - 37..len - 2400 - 37]);
-    let delay = interval_delay(&reference, &realigned, 3680, 4608, 12800);
+    let delay = interval_delay(&reference, &realigned, 3680, 4608, 12800, RATE_8K);
     assert_eq!(delay, 37);
 }
 
@@ -44,7 +45,7 @@ fn interval_delay_finds_a_positive_shift() {
 fn interval_delay_returns_zero_for_silent_degraded_samples() {
     let reference = interval_reference();
     let realigned = vec![0.0f32; reference.samples.len()];
-    let delay = interval_delay(&reference, &realigned, 3680, 4608, 12800);
+    let delay = interval_delay(&reference, &realigned, 3680, 4608, 12800, RATE_8K);
     assert_eq!(delay, 0);
 }
 
@@ -62,6 +63,7 @@ fn flat_model(pitch: f32, bad: std::ops::Range<usize>) -> (PerceptualModel, Vec<
     }
     let asymmetric = vec![0.0f32; frame_count];
     let model = PerceptualModel {
+        rate: RATE_8K,
         frame_range: crate::types::FrameRange {
             start: 2,
             stop: 30,
@@ -85,6 +87,7 @@ fn realign_replaces_bad_frames_when_recomputation_is_quieter() {
         samples: vec![0.0f32; reference.samples.len()],
         nominal_len: 12800,
         input_len: 8000,
+        rate: RATE_8K,
     };
     let (model, mut symmetric, mut asymmetric) = flat_model(0.1, 10..16);
     // Pitch densities of 0.1 sit below every absolute hearing threshold
@@ -115,6 +118,7 @@ fn realign_keeps_existing_values_when_recomputation_is_louder() {
         samples: vec![0.0f32; reference.samples.len()],
         nominal_len: 12800,
         input_len: 8000,
+        rate: RATE_8K,
     };
     // Pitch densities far above every threshold: the recomputed
     // disturbance exceeds the existing 50, so the minimum keeps 50.

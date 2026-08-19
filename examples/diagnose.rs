@@ -91,7 +91,8 @@ fn diagnose(index: usize, reference_8k: &[i16], degraded_8k: &[i16]) {
 
     let model = psychoacoustic::run_frame_loop(&pair.reference, &pair.degraded, &pair.utterances);
     let frame_count = model.frame_count();
-    let skip_flags = negative_delay_skip_flags(&pair.utterances, model.frame_range.stop);
+    let skip_flags =
+        negative_delay_skip_flags(&pair.utterances, model.frame_range.stop, model.rate);
 
     // Mean per-frame pitch and loudness energy over the processed range,
     // summed over all bands, reported in dB relative to the reference

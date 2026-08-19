@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- P.862.2 wideband mode: the `pesq_wb` entry point scores 16 kHz PCM
+  through the rate-parameterized pipeline with the wideband input
+  filter of spec 06 section 6.3 and returns the P.862.2 MOS-LQO of
+  spec 06 section 6.5. The narrowband entry points `pesq` and `pesq_8k`
+  are unchanged and their scores remain bit-identical.
+- A `types::Rate` value on every signal buffer selects the 16 kHz
+  constants of spec 06 section 6.4 (64-sample VAD window, 4800-sample
+  margins, 1024-point alignment FFT, 512/256 model frames, the 49-band
+  Bark table, the 12-section input IIR cascade, and the 16 kHz pitch
+  power scale).
+- Supp 23 conformance harness in tests/conformance.rs, gated on the
+  `PESQ_SUPP23_DIR` environment variable: the 8 kHz test 1(b) criteria
+  (at most 2 pairs beyond 0.05, none beyond 0.1) and the wideband
+  test 4 criterion (all pairs within 0.05) over the 40-pair excerpt of
+  spec/CONFORMANCE-supp23.md.
+
 ## [0.1.2] - 2026-08-17
 
 Documentation and formatting release: the same code and scores, now clean

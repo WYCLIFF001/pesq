@@ -7,10 +7,11 @@ use super::norms::{asymmetric_densities, deadzone_removed, lp_norm, power_normal
 use super::time_weight::time_weights;
 use super::*;
 use crate::psychoacoustic::{NUM_BANDS, bark_width};
+use crate::types::RATE_8K;
 
 /// Sum of the Bark widths over bands 1..=41, the norm's weight sum.
 fn band_weight_sum() -> f64 {
-    (1..NUM_BANDS).map(|band| f64::from(bark_width(band))).sum()
+    (1..NUM_BANDS).map(|band| f64::from(bark_width(band, RATE_8K))).sum()
 }
 
 #[test]
@@ -44,21 +45,21 @@ fn lp_norm_matches_the_spec_formula_on_known_arrays() {
     let mut d = [0.0f32; NUM_BANDS];
     d[1..].fill(3.0);
     let squared: f64 = (1..NUM_BANDS)
-        .map(|band| f64::from(bark_width(band)).powi(2))
+        .map(|band| f64::from(bark_width(band, RATE_8K)).powi(2))
         .sum();
     let expected_2 = 3.0 * (squared / weight_sum).sqrt() * weight_sum;
-    assert!((lp_norm(&d, 2.0) - expected_2).abs() < 1e-4);
-    assert!((lp_norm(&d, 1.0) - 3.0 * weight_sum).abs() < 1e-4);
+    assert!((lp_norm(&d, 2.0, RATE_8K) - expected_2).abs() < 1e-4);
+    assert!((lp_norm(&d, 1.0, RATE_8K) - 3.0 * weight_sum).abs() < 1e-4);
     // A single band, with W the width sum over all bands 1..41:
     // L2 = |d| * w * sqrt(W), L1 = |d| * w.
     d = [0.0f32; NUM_BANDS];
     d[7] = 5.0;
-    let w = f64::from(bark_width(7));
-    assert!((lp_norm(&d, 2.0) - 5.0 * w * weight_sum.sqrt()).abs() < 1e-4);
-    assert!((lp_norm(&d, 1.0) - 5.0 * w).abs() < 1e-5);
+    let w = f64::from(bark_width(7, RATE_8K));
+    assert!((lp_norm(&d, 2.0, RATE_8K) - 5.0 * w * weight_sum.sqrt()).abs() < 1e-4);
+    assert!((lp_norm(&d, 1.0, RATE_8K) - 5.0 * w).abs() < 1e-5);
     // Mixed signs use absolute values.
     d[7] = -5.0;
-    assert!((lp_norm(&d, 2.0) - 5.0 * w * weight_sum.sqrt()).abs() < 1e-4);
+    assert!((lp_norm(&d, 2.0, RATE_8K) - 5.0 * w * weight_sum.sqrt()).abs() < 1e-4);
 }
 
 #[test]
@@ -193,7 +194,7 @@ fn power_normalization_divides_and_caps_at_45() {
 
 #[test]
 fn time_weights_are_one_below_the_long_signal_count() {
-    assert_eq!(time_weights(999, 100_000), vec![1.0f32; 1000]);
+    assert_eq!(time_weights(999, 100_000, RATE_8K), vec![1.0f32; 1000]);
 }
 
 #[test]
@@ -201,7 +202,7 @@ fn time_weights_grow_linearly_for_long_signals() {
     // frame_stop + 1 > 1000, n = (Nmax - 4800)/128 - 1 = 1101,
     // f = 101/5500.
     let n_max = 4800 + 128 * 1102;
-    let weights = time_weights(1500, n_max);
+    let weights = time_weights(1500, n_max, RATE_8K);
     assert_eq!(weights.len(), 1501);
     let f = 101.0 / 5500.0;
     assert!((f64::from(weights[0]) - (1.0 - f)).abs() < 1e-6);
@@ -210,7 +211,7 @@ fn time_weights_grow_linearly_for_long_signals() {
     assert!(weights.windows(2).all(|pair| pair[0] <= pair[1]));
     // A huge n drives f to the 0.5 cap.
     let n_max = 4800 + 128 * 100_001;
-    let capped = time_weights(1500, n_max);
+    let capped = time_weights(1500, n_max, RATE_8K);
     assert!((f64::from(capped[0]) - 0.5).abs() < 1e-6);
 }
 

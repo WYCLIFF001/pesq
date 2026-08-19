@@ -9,28 +9,148 @@
 
 use std::fmt;
 
+/// Sample rate the P.862 pipeline operates at: 8 kHz (narrowband) or
+/// 16 kHz (narrowband or wideband, spec 06 section 6.2). Every
+/// rate-dependent constant of specs 01 to 05 and spec 06 section 6.4
+/// derives from this value, so all processing is rate-selected, not
+/// mode-selected (spec 06, 6.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rate {
+    /// Native narrowband model rate (spec 01, table 1.1).
+    Rate8k,
+    /// Wideband rate, shared by narrowband and wideband mode
+    /// (spec 06, 6.2 and 6.4).
+    Rate16k,
+}
+
+impl Rate {
+    /// Sample rate f in Hz (spec 06, 6.4).
+    pub const fn sample_rate(self) -> usize {
+        match self {
+            Self::Rate8k => 8000,
+            Self::Rate16k => 16000,
+        }
+    }
+
+    /// Window length W in samples used by the VAD analysis: 4 ms at both
+    /// rates (spec 01, table 1.1 and spec 06, 6.4).
+    pub const fn window_samples(self) -> usize {
+        match self {
+            Self::Rate8k => 32,
+            Self::Rate16k => 64,
+        }
+    }
+
+    /// Margin M in windows on each side of the nominal signal
+    /// (spec 01, table 1.1 and spec 06, 6.4).
+    pub const fn margin_windows(self) -> usize {
+        75
+    }
+
+    /// Margin in samples on each side of the nominal signal,
+    /// `M * W` (spec 01, table 1.1).
+    pub const fn margin_samples(self) -> usize {
+        self.margin_windows() * self.window_samples()
+    }
+
+    /// Data padding P of 320 ms in samples (spec 01, table 1.1).
+    pub const fn padding_samples(self) -> usize {
+        match self {
+            Self::Rate8k => 2560,
+            Self::Rate16k => 5120,
+        }
+    }
+
+    /// FFT length A used for fine time alignment (spec 01, table 1.1).
+    pub const fn align_fft_len(self) -> usize {
+        match self {
+            Self::Rate8k => 512,
+            Self::Rate16k => 1024,
+        }
+    }
+
+    /// Minimum input length, `f / 4` samples (250 ms), below which
+    /// processing stops with an error (spec 01, 1.2 step 5 and
+    /// spec 06, 6.2 item 4).
+    pub const fn min_input_samples(self) -> usize {
+        match self {
+            Self::Rate8k => 2000,
+            Self::Rate16k => 4000,
+        }
+    }
+
+    /// Model frame length F in samples, 32 ms (spec 03, 3.1).
+    pub const fn frame_len(self) -> usize {
+        match self {
+            Self::Rate8k => 256,
+            Self::Rate16k => 512,
+        }
+    }
+
+    /// Model frame hop Q in samples, 16 ms (spec 03, 3.1).
+    pub const fn frame_hop(self) -> usize {
+        match self {
+            Self::Rate8k => 128,
+            Self::Rate16k => 256,
+        }
+    }
+
+    /// Number of Bark bands B (spec 03, 3.3 and 3.8; spec 06, 6.4.1).
+    pub const fn num_bands(self) -> usize {
+        match self {
+            Self::Rate8k => 42,
+            Self::Rate16k => 49,
+        }
+    }
+
+    /// Number of power spectrum bins the band grouping consumes
+    /// (spec 03, 3.2 and 3.3): bins 0..=F/2 - 1.
+    pub const fn num_power_bins(self) -> usize {
+        self.frame_len() / 2
+    }
+
+    /// Pitch power density scale Sp (spec 03, 3.3 step 3; spec 06, 6.4).
+    pub const fn pitch_power_scale(self) -> f64 {
+        match self {
+            Self::Rate8k => 2.764_344e-5,
+            Self::Rate16k => 6.910_853e-6,
+        }
+    }
+
+    /// Loudness scale Sl (spec 03, 3.6 step 4): identical at both rates
+    /// (spec 06, 6.4).
+    pub const fn loudness_scale(self) -> f64 {
+        1.866_055e-1
+    }
+}
+
+/// The two rate values. [`SignalBuffer`] carries the rate of its
+/// samples, and every stage derives its constants from that rate.
+pub const RATE_8K: Rate = Rate::Rate8k;
+pub const RATE_16K: Rate = Rate::Rate16k;
+
 /// Sample rate in Hz that the P.862 model operates at (spec 01, table 1.1).
-pub const SAMPLE_RATE_HZ: usize = 8000;
+pub const SAMPLE_RATE_HZ: usize = RATE_8K.sample_rate();
 
 /// Window length W in samples used by the VAD analysis (spec 01, table 1.1).
-pub const WINDOW_SAMPLES: usize = 32;
+pub const WINDOW_SAMPLES: usize = RATE_8K.window_samples();
 
 /// Margin M in windows on each side of the nominal signal (spec 01, table 1.1).
-pub const MARGIN_WINDOWS: usize = 75;
+pub const MARGIN_WINDOWS: usize = RATE_8K.margin_windows();
 
 /// Margin in samples on each side of the nominal signal,
 /// `MARGIN_WINDOWS * WINDOW_SAMPLES` (spec 01, table 1.1).
-pub const MARGIN_SAMPLES: usize = 2400;
+pub const MARGIN_SAMPLES: usize = RATE_8K.margin_samples();
 
 /// Data padding P of 320 ms in samples (spec 01, table 1.1).
-pub const PADDING_SAMPLES: usize = 2560;
+pub const PADDING_SAMPLES: usize = RATE_8K.padding_samples();
 
 /// FFT length A used for fine time alignment (spec 01, table 1.1).
-pub const ALIGN_FFT_LEN: usize = 512;
+pub const ALIGN_FFT_LEN: usize = RATE_8K.align_fft_len();
 
 /// Minimum input length, `f / 4 = 2000` samples (250 ms), below which
 /// processing stops with an error (spec 01, 1.2 step 5).
-pub const MIN_INPUT_SAMPLES: usize = 2000;
+pub const MIN_INPUT_SAMPLES: usize = RATE_8K.min_input_samples();
 
 /// Errors reported by [`pesq`](crate::pesq) and the processing stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,10 +165,13 @@ pub enum PesqError {
 impl fmt::Display for PesqError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SignalTooShort { samples } => write!(
-                f,
-                "input has {samples} samples, the minimum is {MIN_INPUT_SAMPLES} (250 ms at 8 kHz)"
-            ),
+            Self::SignalTooShort { samples } => {
+                write!(
+                    f,
+                    "input has {samples} samples, which is below the minimum of \
+                     f/4 samples (250 ms) at the operating sample rate"
+                )
+            }
             Self::NoUtterancesFound => {
                 write!(f, "no utterance found in the input signals")
             }
@@ -59,17 +182,23 @@ impl fmt::Display for PesqError {
 impl std::error::Error for PesqError {}
 
 /// A mono signal buffer in the layout defined by spec 01 section 1.2
-/// step 6: [`MARGIN_SAMPLES`] zeros, then the L signal samples, then
-/// [`MARGIN_SAMPLES`] + [`PADDING_SAMPLES`] zeros, for a total length of
-/// `L + 7360` samples. The nominal length N covers `[0, L + 4800)`.
+/// step 6: a margin of zeros, then the L signal samples, then
+/// margin + padding zeros. At 8 kHz the margins are
+/// [`MARGIN_SAMPLES`] samples each and the total length is `L + 7360`;
+/// at 16 kHz the margins are 4800 samples each and the total length is
+/// `L + 14720` (spec 06, 6.3). The nominal length N covers
+/// `[0, L + 2 * margin)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignalBuffer {
-    /// Full buffer of length `L + 7360 = N + P`.
+    /// Full buffer of `L + 2 * margin + P` samples.
     pub samples: Vec<f32>,
-    /// Nominal length `N = L + 2 * MARGIN_SAMPLES`.
+    /// Nominal length `N = L + 2 * margin`.
     pub nominal_len: usize,
     /// Number of PCM samples L held in the buffer.
     pub input_len: usize,
+    /// Sample rate the buffer operates at; every stage derives its
+    /// constants from this value (spec 06, 6.4).
+    pub rate: Rate,
 }
 
 impl SignalBuffer {
@@ -77,30 +206,39 @@ impl SignalBuffer {
     /// of 8 kHz PCM samples, enforcing the minimum length check of
     /// step 5.
     pub fn from_pcm(pcm: &[i16]) -> Result<Self, PesqError> {
+        Self::from_pcm_at(pcm, RATE_8K)
+    }
+
+    /// Build the margin layout from PCM samples at an explicit rate,
+    /// enforcing the rate's minimum length check (spec 01, 1.2 step 5
+    /// and spec 06, 6.2 item 4).
+    pub fn from_pcm_at(pcm: &[i16], rate: Rate) -> Result<Self, PesqError> {
         let l = pcm.len();
-        if l < MIN_INPUT_SAMPLES {
+        if l < rate.min_input_samples() {
             return Err(PesqError::SignalTooShort { samples: l });
         }
-        let nominal_len = l + 2 * MARGIN_SAMPLES;
-        let mut samples = vec![0.0f32; nominal_len + PADDING_SAMPLES];
+        let margin = rate.margin_samples();
+        let nominal_len = l + 2 * margin;
+        let mut samples = vec![0.0f32; nominal_len + rate.padding_samples()];
         for (i, &sample) in pcm.iter().enumerate() {
-            samples[MARGIN_SAMPLES + i] = f32::from(sample);
+            samples[margin + i] = f32::from(sample);
         }
         Ok(Self {
             samples,
             nominal_len,
             input_len: l,
+            rate,
         })
     }
 
-    /// Index of the first signal sample (always [`MARGIN_SAMPLES`]).
+    /// Index of the first signal sample (one margin before the PCM).
     pub const fn signal_start(&self) -> usize {
-        MARGIN_SAMPLES
+        self.rate.margin_samples()
     }
 
     /// Index one past the last signal sample.
     pub fn signal_end(&self) -> usize {
-        MARGIN_SAMPLES + self.input_len
+        self.rate.margin_samples() + self.input_len
     }
 }
 

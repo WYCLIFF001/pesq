@@ -16,8 +16,8 @@ mod tests;
 mod tests_realign;
 mod time_weight;
 
-use crate::psychoacoustic::{NUM_BANDS, run_frame_loop};
-use crate::types::{SignalBuffer, Utterance};
+use crate::psychoacoustic::run_frame_loop;
+use crate::types::{Rate, SignalBuffer, Utterance};
 
 use norms::{asymmetric_densities, deadzone_removed, lp_norm, power_normalized};
 
@@ -58,8 +58,15 @@ pub const MIN_BAD_INTERVAL_FRAMES: usize = 5;
 /// Maximum number of bad intervals processed (spec 04, 4.5.1 step 3).
 pub const MAX_BAD_INTERVALS: usize = 1000;
 
-/// Delay search range s = 4 * F in samples (spec 04, 4.5.3 step 1).
-pub const BAD_INTERVAL_SEARCH_SAMPLES: usize = 1024;
+/// Delay search range s = 4 * F in samples at 8 kHz (spec 04, 4.5.3
+/// step 1); at 16 kHz it is 4 times the 16 kHz frame length.
+pub const BAD_INTERVAL_SEARCH_SAMPLES: usize = 4 * crate::psychoacoustic::FRAME_LEN;
+
+/// Delay search range s = 4 * F in samples of the given rate
+/// (spec 04, 4.5.3 step 1).
+pub fn bad_interval_search_samples(rate: Rate) -> usize {
+    4 * rate.frame_len()
+}
 
 /// Minimum normalized correlation for an accepted interval delay
 /// (spec 04, 4.5.3 step 6).
@@ -98,6 +105,8 @@ pub fn frame_disturbances(
     utterances: &[Utterance],
 ) -> FrameDisturbances {
     let model = run_frame_loop(reference, degraded, utterances);
+    let rate = model.rate;
+    let bands = rate.num_bands();
     let frame_start = model.frame_range.start;
     let frame_stop = model.frame_range.stop;
     let mut symmetric = vec![0.0f32; frame_stop + 1];
@@ -106,32 +115,32 @@ pub fn frame_disturbances(
     // spec 04, 4.1 to 4.3: first pass over the processed frames. The
     // gate of 4.2 step 2 is evaluated here, before the frame skipping
     // of 4.4 zeroes any values.
-    let mut d = [0.0f32; NUM_BANDS];
-    let mut d_asym = [0.0f32; NUM_BANDS];
+    let mut d = vec![0.0f32; bands];
+    let mut d_asym = vec![0.0f32; bands];
     let mut bad_frames_exist = false;
     for frame in frame_start..=frame_stop {
-        let base = frame * NUM_BANDS;
+        let base = frame * bands;
         deadzone_removed(
-            &model.loudness_ref[base..base + NUM_BANDS],
-            &model.loudness_deg[base..base + NUM_BANDS],
+            &model.loudness_ref[base..base + bands],
+            &model.loudness_deg[base..base + bands],
             &mut d,
         );
-        let d_sym = lp_norm(&d, 2.0) as f32;
+        let d_sym = lp_norm(&d, 2.0, rate) as f32;
         if d_sym > BAD_FRAME_GATE {
             bad_frames_exist = true;
         }
         asymmetric_densities(
             &d,
-            &model.pitch_ref[base..base + NUM_BANDS],
-            &model.pitch_deg[base..base + NUM_BANDS],
+            &model.pitch_ref[base..base + bands],
+            &model.pitch_deg[base..base + bands],
             &mut d_asym,
         );
         symmetric[frame] = d_sym;
-        asymmetric[frame] = lp_norm(&d_asym, 1.0) as f32;
+        asymmetric[frame] = lp_norm(&d_asym, 1.0, rate) as f32;
     }
 
     // spec 04, 4.4: frame skipping at negative delay jumps.
-    let skipped = crate::utterances::negative_delay_skip_flags(utterances, frame_stop);
+    let skipped = crate::utterances::negative_delay_skip_flags(utterances, frame_stop, rate);
     for (frame, &skip) in skipped.iter().enumerate() {
         if skip {
             symmetric[frame] = 0.0;
@@ -167,6 +176,7 @@ pub fn frame_disturbances(
         time_weights: time_weight::time_weights(
             frame_stop,
             reference.nominal_len.max(degraded.nominal_len),
+            rate,
         ),
     }
 }

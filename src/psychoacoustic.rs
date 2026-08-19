@@ -6,31 +6,33 @@
 //! a common nominal length (spec 01 section 1.7), with the per-utterance
 //! delays of spec 01 sections 1.10 to 1.13. It produces the per-frame
 //! pitch power densities, loudness densities, silence flags, and
-//! reference audible powers that spec 04 consumes.
+//! reference audible powers that spec 04 consumes. The rate is taken
+//! from the reference buffer: every constant here is rate-selected
+//! (spec 06, 6.4 and 6.6).
 
 mod table;
+mod table16;
 
-use crate::types::{FrameRange, SignalBuffer, Utterance};
-use crate::types::{MARGIN_SAMPLES, PADDING_SAMPLES, WINDOW_SAMPLES};
+use crate::types::{FrameRange, Rate, RATE_8K, SignalBuffer, Utterance};
 use rustfft::Fft;
 use rustfft::num_complex::Complex;
 
 /// Frame length F in samples, 32 ms (spec 03, 3.1).
-pub const FRAME_LEN: usize = 256;
+pub const FRAME_LEN: usize = RATE_8K.frame_len();
 
 /// Frame hop Q in samples, 16 ms (spec 03, 3.1).
-pub const FRAME_HOP: usize = 128;
+pub const FRAME_HOP: usize = RATE_8K.frame_hop();
 
 /// Number of Bark bands B for the 8 kHz narrowband mode (spec 03, 3.3
 /// and 3.8).
-pub const NUM_BANDS: usize = 42;
+pub const NUM_BANDS: usize = RATE_8K.num_bands();
 
 /// Number of power spectrum bins the band grouping of spec 03 section
-/// 3.3 consumes: bins 0..=127. The grouping starts at bin 0 (the
-/// already-zeroed DC bin) and the group counts of Table 1 sum to 128.
-/// The Nyquist bin (bin 128) is not produced by section 3.2 and is not
-/// part of the grouping.
-const NUM_POWER_BINS: usize = 128;
+/// 3.3 consumes: bins 0..=127 at 8 kHz. The grouping starts at bin 0
+/// (the already-zeroed DC bin) and the group counts of Table 1 sum to
+/// F/2. The Nyquist bin is not produced by section 3.2 and is not part
+/// of the grouping.
+pub const NUM_POWER_BINS: usize = RATE_8K.num_power_bins();
 
 /// Absolute-sum threshold of the 5-sample silence skip probes
 /// (spec 03, 3.1 steps 1 and 2).
@@ -65,10 +67,11 @@ const SCALE_SMOOTH_CURRENT: f64 = 0.8;
 const SCALE_MIN: f64 = 3e-4;
 const SCALE_MAX: f64 = 5.0;
 
-/// Bark width `w[b]` of Table 1 (spec 03, 3.8), the band weight of the
-/// disturbance norm of spec 04 section 4.2.
-pub fn bark_width(band: usize) -> f32 {
-    table::BARK_BANDS[band].bark_width
+/// Bark width `w[b]` of the rate's Table 1 (spec 03, 3.8 and spec 06,
+/// 6.4.1), the band weight of the disturbance norm of spec 04 section
+/// 4.2.
+pub fn bark_width(band: usize, rate: Rate) -> f32 {
+    table::bark_table(rate)[band].bark_width
 }
 
 /// Short-term power spectra of spec 03 section 3.2, holding the FFT
@@ -77,23 +80,26 @@ struct Spectra {
     fft: std::sync::Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     scratch: Vec<Complex<f32>>,
+    power_bins: usize,
 }
 
 impl Spectra {
-    fn new() -> Self {
+    fn new(rate: Rate) -> Self {
         Self {
-            fft: crate::dsp_fft::forward_plan(FRAME_LEN),
-            window: crate::dsp::hann_window(FRAME_LEN),
-            scratch: Vec::with_capacity(FRAME_LEN),
+            fft: crate::dsp_fft::forward_plan(rate.frame_len()),
+            window: crate::dsp::hann_window(rate.frame_len()),
+            scratch: Vec::with_capacity(rate.frame_len()),
+            power_bins: rate.num_power_bins(),
         }
     }
 
     /// Power spectrum of the frame starting at sample `start`: window
     /// with the Hann window, forward FFT, `real^2 + imag^2` per bin, and
     /// bin 0 forced to zero (spec 03, 3.2 steps 1 to 3). The output
-    /// covers bins 0..=127; the band grouping of 3.3 consumes all 128
-    /// bins starting at bin 0.
-    fn power(&mut self, samples: &[f32], start: usize, out: &mut [f64; NUM_POWER_BINS]) {
+    /// covers bins 0..=F/2 - 1; the band grouping of 3.3 consumes all of
+    /// them starting at bin 0.
+    fn power(&mut self, samples: &[f32], start: usize, out: &mut [f64]) {
+        debug_assert_eq!(out.len(), self.power_bins);
         self.scratch.clear();
         self.scratch.extend(
             self.window
@@ -102,7 +108,7 @@ impl Spectra {
                 .map(|(i, &weight)| Complex::new(samples[start + i] * weight, 0.0)),
         );
         self.fft.process(&mut self.scratch);
-        for (bin, value) in self.scratch.iter().take(NUM_POWER_BINS).enumerate() {
+        for (bin, value) in self.scratch.iter().take(self.power_bins).enumerate() {
             out[bin] = f64::from(value.re * value.re + value.im * value.im);
         }
         out[0] = 0.0;
@@ -110,13 +116,14 @@ impl Spectra {
 }
 
 /// Start-of-signal silence skip of spec 03 section 3.1 step 1: the
-/// first s whose 5-sample absolute sum at 2400 + s reaches 500, capped
+/// first s whose 5-sample absolute sum at margin + s reaches 500, capped
 /// at Nmax / 2.
 fn silence_skip_start(reference: &SignalBuffer, n_max: usize) -> usize {
+    let margin = reference.rate.margin_samples();
     let mut skip = 0;
     while skip < n_max / 2
         && (0..5)
-            .map(|i| f64::from(reference.samples[MARGIN_SAMPLES + skip + i].abs()))
+            .map(|i| f64::from(reference.samples[margin + skip + i].abs()))
             .sum::<f64>()
             < SILENCE_SKIP_THRESHOLD
     {
@@ -127,9 +134,10 @@ fn silence_skip_start(reference: &SignalBuffer, n_max: usize) -> usize {
 
 /// End-of-signal silence skip of spec 03 section 3.1 step 2: the mirror
 /// of [`silence_skip_start`] probing backward from sample
-/// `Nmax - 2400 + P - 1`.
+/// `Nmax - margin + P - 1`.
 fn silence_skip_end(reference: &SignalBuffer, n_max: usize) -> usize {
-    let last = n_max - MARGIN_SAMPLES + PADDING_SAMPLES - 1;
+    let margin = reference.rate.margin_samples();
+    let last = n_max - margin + reference.rate.padding_samples() - 1;
     let mut skip = 0;
     while skip < n_max / 2
         && (0..5)
@@ -144,18 +152,20 @@ fn silence_skip_end(reference: &SignalBuffer, n_max: usize) -> usize {
 
 /// Frame range of spec 03 section 3.1: first processed frame
 /// `skip_start / Q` (step 3), last processed frame
-/// `(Nmax - 4800 + P - skip_end) / Q - 1` (step 4), integer divisions
-/// (spec 01, 1.1). `n_max` is the common nominal length Nmax of
-/// spec 01 section 1.7 (the larger of the two nominal lengths), the
+/// `(Nmax - 2*margin + P - skip_end) / Q - 1` (step 4), integer
+/// divisions (spec 01, 1.1). `n_max` is the common nominal length Nmax
+/// of spec 01 section 1.7 (the larger of the two nominal lengths), the
 /// length both saved buffers have after equalization. With a fully
 /// silent signal `stop` can fall below `start`; the frame loop then
 /// processes an empty range.
 pub fn frame_range(reference: &SignalBuffer, n_max: usize) -> FrameRange {
+    let rate = reference.rate;
     let skip_start = silence_skip_start(reference, n_max);
     let skip_end = silence_skip_end(reference, n_max);
-    let start = skip_start / FRAME_HOP;
-    let stop =
-        ((n_max - 2 * MARGIN_SAMPLES + PADDING_SAMPLES - skip_end) / FRAME_HOP).saturating_sub(1);
+    let start = skip_start / rate.frame_hop();
+    let stop = ((n_max - 2 * rate.margin_samples() + rate.padding_samples() - skip_end)
+        / rate.frame_hop())
+    .saturating_sub(1);
     FrameRange {
         start,
         stop,
@@ -170,11 +180,11 @@ pub fn frame_range(reference: &SignalBuffer, n_max: usize) -> FrameRange {
 /// delay is the fine delay of spec 01 section 1.10 step 8, which already
 /// includes the coarse estimate. Shared with the disturbance stage
 /// (spec 04, 4.5.2 step 2).
-pub(crate) fn governing_delay(r0: usize, utterances: &[Utterance]) -> i32 {
+pub(crate) fn governing_delay(r0: usize, utterances: &[Utterance], rate: Rate) -> i32 {
     utterances
         .iter()
         .rev()
-        .find(|u| u.start_window * WINDOW_SAMPLES <= r0)
+        .find(|u| u.start_window * rate.window_samples() <= r0)
         .or_else(|| utterances.first())
         .map_or(0, |u| u.fine_delay)
 }
@@ -182,39 +192,44 @@ pub(crate) fn governing_delay(r0: usize, utterances: &[Utterance]) -> i32 {
 /// Degraded frame start `d0 = r0 + delay`; `None` when the frame lies
 /// out of bounds and the degraded spectrum must be all zeros
 /// (spec 03, 3.2 step 4).
-fn degraded_start(r0: usize, n_max: usize, utterances: &[Utterance]) -> Option<usize> {
-    let d0 = r0 as i64 + i64::from(governing_delay(r0, utterances));
-    if d0 <= 0 || d0 + FRAME_LEN as i64 >= (n_max + PADDING_SAMPLES) as i64 {
+fn degraded_start(
+    r0: usize,
+    n_max: usize,
+    utterances: &[Utterance],
+    rate: Rate,
+) -> Option<usize> {
+    let d0 = r0 as i64 + i64::from(governing_delay(r0, utterances, rate));
+    if d0 <= 0 || d0 + rate.frame_len() as i64 >= (n_max + rate.padding_samples()) as i64 {
         return None;
     }
     Some(d0 as usize)
 }
 
-/// Warp a 128-bin power spectrum into the 42 Bark bands (spec 03,
-/// section 3.3): band b sums the next `n[b]` bins starting at bin 0
-/// (the already-zeroed DC bin), consuming bins 0..=127, then multiplies
-/// by the correction factor `c[b]` and by Sp. The sums accumulate in f64
-/// and
-/// the result is stored as f32 (spec 01, 1.1).
-pub fn warp_to_bark(power: &[f64; NUM_POWER_BINS]) -> [f32; NUM_BANDS] {
-    let mut density = [0.0f32; NUM_BANDS];
+/// Warp a power spectrum into the rate's Bark bands (spec 03, section
+/// 3.3): band b sums the next `n[b]` bins starting at bin 0 (the
+/// already-zeroed DC bin), consuming bins 0..=F/2 - 1, then multiplies
+/// by the correction factor `c[b]` and by Sp. The sums accumulate in
+/// f64 and the result is stored as f32 (spec 01, 1.1).
+pub fn warp_to_bark(power: &[f64], rate: Rate) -> Vec<f32> {
+    let mut density = vec![0.0f32; rate.num_bands()];
     let mut bin = 0;
-    for (band, row) in table::BARK_BANDS.iter().enumerate() {
+    for (band, row) in table::bark_table(rate).iter().enumerate() {
         let sum: f64 = power[bin..bin + row.bins].iter().sum();
         bin += row.bins;
-        density[band] = (sum * f64::from(row.correction) * table::PITCH_POWER_SCALE) as f32;
+        density[band] = (sum * f64::from(row.correction) * rate.pitch_power_scale()) as f32;
     }
-    debug_assert_eq!(bin, NUM_POWER_BINS);
+    debug_assert_eq!(bin, rate.num_power_bins());
     density
 }
 
 /// Audible power of a frame with a factor (spec 03, 3.4 step 1): the
-/// sum over bands 1..=41 (band 0 excluded) of the densities that exceed
+/// sum over bands 1..=B-1 (band 0 excluded) of the densities that exceed
 /// `factor * t[b]`.
-pub fn audible_power(density: &[f32], factor: f64) -> f64 {
+pub fn audible_power(density: &[f32], factor: f64, rate: Rate) -> f64 {
+    let bands = table::bark_table(rate);
     let mut total = 0.0f64;
     for (band, &p) in density.iter().enumerate().skip(1) {
-        if f64::from(p) > factor * f64::from(table::BARK_BANDS[band].threshold) {
+        if f64::from(p) > factor * f64::from(bands[band].threshold) {
             total += f64::from(p);
         }
     }
@@ -224,8 +239,8 @@ pub fn audible_power(density: &[f32], factor: f64) -> f64 {
 /// Zwicker loudness density of one band (spec 03, 3.6), including the
 /// loudness scaling Sl of step 4. Computed in f64 and stored as f32
 /// (spec 01, 1.1).
-pub fn zwicker_loudness(pitch_power: f32, band: usize) -> f32 {
-    let row = &table::BARK_BANDS[band];
+pub fn zwicker_loudness(pitch_power: f32, band: usize, rate: Rate) -> f32 {
+    let row = &table::bark_table(rate)[band];
     let threshold = f64::from(row.threshold);
     let p = f64::from(pitch_power);
     if p <= threshold {
@@ -242,7 +257,7 @@ pub fn zwicker_loudness(pitch_power: f32, band: usize) -> f32 {
     // Modified Zwicker exponent (step 2) and the power law (step 3).
     let z = 0.23 * h;
     let loudness = (threshold / 0.5).powf(z) * ((0.5 + 0.5 * p / threshold).powf(z) - 1.0);
-    (loudness * table::LOUDNESS_SCALE) as f32
+    (loudness * rate.loudness_scale()) as f32
 }
 
 /// Compensation factor of spec 03 section 3.5 step 3: the ratio of the
@@ -269,14 +284,15 @@ pub fn local_scale(a_ref: f64, a_deg: f64, previous: f64, frame: usize) -> (f64,
 /// Output of the perceptual model frame loop (spec 03, sections 3.1 to
 /// 3.7), the input to the disturbance stage of spec 04.
 ///
-/// The density arrays are flat with `frame * NUM_BANDS + band` indexing
-/// and hold `frame_stop + 1` entries (spec 03, 3.1 step 5). Pitch
-/// densities cover frames 0..=frame_stop because the compensation
-/// averages of 3.5 span that range; loudness and audible power are only
-/// produced for the processed range `[frame_start, frame_stop]` and are
-/// zero before it.
+/// The density arrays are flat with `frame * B + band` indexing and hold
+/// `frame_stop + 1` entries (spec 03, 3.1 step 5). Pitch densities cover
+/// frames 0..=frame_stop because the compensation averages of 3.5 span
+/// that range; loudness and audible power are only produced for the
+/// processed range `[frame_start, frame_stop]` and are zero before it.
 #[derive(Debug, Clone)]
 pub struct PerceptualModel {
+    /// Sample rate this model was computed at; B derives from it.
+    pub rate: Rate,
     /// Processed frame range of spec 03 section 3.1.
     pub frame_range: FrameRange,
     /// Reference pitch power densities after the compensation of spec 03
@@ -305,22 +321,22 @@ impl PerceptualModel {
 
     /// Reference pitch power density of one frame and band.
     pub fn pitch_ref_at(&self, frame: usize, band: usize) -> f32 {
-        self.pitch_ref[frame * NUM_BANDS + band]
+        self.pitch_ref[frame * self.rate.num_bands() + band]
     }
 
     /// Degraded pitch power density of one frame and band.
     pub fn pitch_deg_at(&self, frame: usize, band: usize) -> f32 {
-        self.pitch_deg[frame * NUM_BANDS + band]
+        self.pitch_deg[frame * self.rate.num_bands() + band]
     }
 
     /// Reference loudness density of one frame and band.
     pub fn loudness_ref_at(&self, frame: usize, band: usize) -> f32 {
-        self.loudness_ref[frame * NUM_BANDS + band]
+        self.loudness_ref[frame * self.rate.num_bands() + band]
     }
 
     /// Degraded loudness density of one frame and band.
     pub fn loudness_deg_at(&self, frame: usize, band: usize) -> f32 {
-        self.loudness_deg[frame * NUM_BANDS + band]
+        self.loudness_deg[frame * self.rate.num_bands() + band]
     }
 }
 
@@ -343,41 +359,44 @@ pub fn run_frame_loop(
     // layout (3.1), the degraded bounds (3.2 step 4), and the
     // compensation divisor (3.5 step 1) all take Nmax, not the
     // reference's own nominal length.
+    let rate = reference.rate;
+    let bands = rate.num_bands();
     let n_max = reference.nominal_len.max(degraded.nominal_len);
     let frame_range = frame_range(reference, n_max);
     let frame_count = frame_range.stop + 1;
-    let mut spectra = Spectra::new();
+    let mut spectra = Spectra::new(rate);
 
-    let mut pitch_ref = vec![0.0f32; frame_count * NUM_BANDS];
-    let mut pitch_deg = vec![0.0f32; frame_count * NUM_BANDS];
+    let mut pitch_ref = vec![0.0f32; frame_count * bands];
+    let mut pitch_deg = vec![0.0f32; frame_count * bands];
     let mut silence_flags = vec![false; frame_count];
-    let mut ref_sums = [0.0f64; NUM_BANDS];
-    let mut deg_sums = [0.0f64; NUM_BANDS];
-    let mut ref_power = [0.0f64; NUM_POWER_BINS];
-    let mut deg_power = [0.0f64; NUM_POWER_BINS];
+    let mut ref_sums = vec![0.0f64; bands];
+    let mut deg_sums = vec![0.0f64; bands];
+    let mut ref_power = vec![0.0f64; rate.num_power_bins()];
+    let mut deg_power = vec![0.0f64; rate.num_power_bins()];
 
     // First pass: spectra, warping, silence flags, and the per-band sums
     // of the compensation averages (spec 03, 3.2 to 3.5 step 1).
     for frame in 0..=frame_range.stop {
-        let r0 = MARGIN_SAMPLES + frame * FRAME_HOP;
+        let r0 = rate.margin_samples() + frame * rate.frame_hop();
         spectra.power(&reference.samples, r0, &mut ref_power);
-        let ref_density = warp_to_bark(&ref_power);
-        let deg_density = match degraded_start(r0, n_max, utterances) {
+        let ref_density = warp_to_bark(&ref_power, rate);
+        let deg_density = match degraded_start(r0, n_max, utterances, rate) {
             Some(d0) => {
                 spectra.power(&degraded.samples, d0, &mut deg_power);
-                warp_to_bark(&deg_power)
+                warp_to_bark(&deg_power, rate)
             }
-            None => [0.0f32; NUM_BANDS],
+            None => vec![0.0f32; bands],
         };
         silence_flags[frame] =
-            audible_power(&ref_density, SILENCE_FLAG_FACTOR) < SILENCE_FLAG_POWER;
-        for band in 0..NUM_BANDS {
-            pitch_ref[frame * NUM_BANDS + band] = ref_density[band];
-            pitch_deg[frame * NUM_BANDS + band] = deg_density[band];
+            audible_power(&ref_density, SILENCE_FLAG_FACTOR, rate) < SILENCE_FLAG_POWER;
+        for band in 0..bands {
+            pitch_ref[frame * bands + band] = ref_density[band];
+            pitch_deg[frame * bands + band] = deg_density[band];
             if silence_flags[frame] {
                 continue;
             }
-            let limit = COMPENSATION_FACTOR * f64::from(table::BARK_BANDS[band].threshold);
+            let limit =
+                COMPENSATION_FACTOR * f64::from(table::bark_table(rate)[band].threshold);
             if f64::from(ref_density[band]) > limit {
                 ref_sums[band] += f64::from(ref_density[band]);
             }
@@ -390,12 +409,14 @@ pub fn run_frame_loop(
     // Compensation: per-band averages over the fixed divisor of spec 03
     // section 3.5 step 1, the clamped ratio of step 3, applied to every
     // reference frame (step 4).
-    let divisor = (((n_max - 2 * MARGIN_SAMPLES + PADDING_SAMPLES) / FRAME_HOP) - 1) as f64;
-    for band in 0..NUM_BANDS {
+    let divisor =
+        (((n_max - 2 * rate.margin_samples() + rate.padding_samples()) / rate.frame_hop()) - 1)
+            as f64;
+    for band in 0..bands {
         let factor = compensation_factor(ref_sums[band] / divisor, deg_sums[band] / divisor);
         for frame in 0..=frame_range.stop {
-            pitch_ref[frame * NUM_BANDS + band] =
-                (f64::from(pitch_ref[frame * NUM_BANDS + band]) * factor) as f32;
+            pitch_ref[frame * bands + band] =
+                (f64::from(pitch_ref[frame * bands + band]) * factor) as f32;
         }
     }
 
@@ -404,8 +425,8 @@ pub fn run_frame_loop(
     // step 3 uses the absolute frame index, so with a nonzero frame
     // start the first processed frame is smoothed against the initial
     // previous scale of 1 (step 3, initial state).
-    let mut loudness_ref = vec![0.0f32; frame_count * NUM_BANDS];
-    let mut loudness_deg = vec![0.0f32; frame_count * NUM_BANDS];
+    let mut loudness_ref = vec![0.0f32; frame_count * bands];
+    let mut loudness_deg = vec![0.0f32; frame_count * bands];
     let mut audible_ref = vec![0.0f32; frame_count];
     let mut previous_scale = 1.0;
     // The range governs the iteration count (empty when stop < start);
@@ -413,22 +434,23 @@ pub fn run_frame_loop(
     for (frame, audible) in
         (frame_range.start..=frame_range.stop).zip(audible_ref.iter_mut().skip(frame_range.start))
     {
-        let base = frame * NUM_BANDS;
-        let a_ref = audible_power(&pitch_ref[base..base + NUM_BANDS], 1.0);
-        let a_deg = audible_power(&pitch_deg[base..base + NUM_BANDS], 1.0);
+        let base = frame * bands;
+        let a_ref = audible_power(&pitch_ref[base..base + bands], 1.0, rate);
+        let a_deg = audible_power(&pitch_deg[base..base + bands], 1.0, rate);
         let (unclamped, clamped) = local_scale(a_ref, a_deg, previous_scale, frame);
         previous_scale = unclamped;
         *audible = a_ref as f32;
-        for band in 0..NUM_BANDS {
+        for band in 0..bands {
             pitch_deg[base + band] *= clamped as f32;
         }
-        for band in 0..NUM_BANDS {
-            loudness_ref[base + band] = zwicker_loudness(pitch_ref[base + band], band);
-            loudness_deg[base + band] = zwicker_loudness(pitch_deg[base + band], band);
+        for band in 0..bands {
+            loudness_ref[base + band] = zwicker_loudness(pitch_ref[base + band], band, rate);
+            loudness_deg[base + band] = zwicker_loudness(pitch_deg[base + band], band, rate);
         }
     }
 
     PerceptualModel {
+        rate,
         frame_range,
         pitch_ref,
         pitch_deg,

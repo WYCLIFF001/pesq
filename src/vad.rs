@@ -6,7 +6,7 @@
 //! short-run removal, the low-energy run removal, the gap joining, and
 //! the edge smoothing, before the log-domain array is derived.
 
-use crate::types::{SignalBuffer, VadData, WINDOW_SAMPLES};
+use crate::types::{SignalBuffer, VadData};
 
 /// Number of threshold iterations of spec 01 section 1.8 step 4.
 const THRESHOLD_ITERATIONS: usize = 12;
@@ -25,17 +25,18 @@ const MAX_JOIN_GAP: usize = 50;
 /// windows; a fractional tail shorter than W samples is dropped by the
 /// integer division.
 pub fn voice_activity_detection(buffer: &SignalBuffer) -> VadData {
-    let window_count = buffer.nominal_len / WINDOW_SAMPLES;
+    let window = buffer.rate.window_samples();
+    let window_count = buffer.nominal_len / window;
 
     // Step 1: mean of squares per window; sums accumulate in f64.
     let mut energy: Vec<f32> = (0..window_count)
         .map(|v| {
-            let start = v * WINDOW_SAMPLES;
-            let sum_squares: f64 = buffer.samples[start..start + WINDOW_SAMPLES]
+            let start = v * window;
+            let sum_squares: f64 = buffer.samples[start..start + window]
                 .iter()
                 .map(|&sample| f64::from(sample * sample))
                 .sum();
-            (sum_squares / WINDOW_SAMPLES as f64) as f32
+            (sum_squares / window as f64) as f32
         })
         .collect();
 
@@ -224,7 +225,7 @@ fn positive_runs(energy: &[f32]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{MARGIN_SAMPLES, SAMPLE_RATE_HZ};
+    use crate::types::{MARGIN_SAMPLES, SAMPLE_RATE_HZ, WINDOW_SAMPLES};
 
     /// A signal buffer with two sine bursts separated by silence. The
     /// bursts start at PCM offset 0, so they begin at buffer window
